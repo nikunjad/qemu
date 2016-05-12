@@ -43,6 +43,9 @@
 #define XICS_SPAPR_KVM(obj) \
      OBJECT_CHECK(KVMXICSState, (obj), TYPE_XICS_SPAPR_KVM)
 
+#define TYPE_XICS_NATIVE "xics-native"
+#define XICS_NATIVE(obj) OBJECT_CHECK(XICSState, (obj), TYPE_XICS_NATIVE)
+
 #define XICS_COMMON_CLASS(klass) \
      OBJECT_CLASS_CHECK(XICSStateClass, (klass), TYPE_XICS_COMMON)
 #define XICS_SPAPR_CLASS(klass) \
@@ -51,6 +54,8 @@
      OBJECT_GET_CLASS(XICSStateClass, (obj), TYPE_XICS_COMMON)
 #define XICS_SPAPR_GET_CLASS(obj) \
      OBJECT_GET_CLASS(XICSStateClass, (obj), TYPE_XICS_SPAPR)
+#define XICS_NATIVE_CLASS(klass) \
+     OBJECT_CLASS_CHECK(XICSStateClass, (klass), TYPE_XICS_NATIVE)
 
 #define XICS_IPI        0x2
 #define XICS_BUID       0x1
@@ -85,6 +90,7 @@ struct XICSState {
     uint32_t nr_irqs;
     ICPState *ss;
     QLIST_HEAD(, ICSState) ics;
+    MemoryRegion icp_mmio;
 };
 
 #define TYPE_ICP "icp"
@@ -116,7 +122,12 @@ struct ICPState {
     uint8_t mfrr;
     qemu_irq output;
     bool cap_irq_xics_enabled;
+    uint32_t links[3];
 };
+
+/* This should be an XSCOM BAR ... the size is arbitrary as well */
+#define ICP_MM_BASE     0x0003FFFF80000000
+#define ICP_MM_SIZE     0x0000000010000000
 
 #define TYPE_ICS_BASE "ics-base"
 #define ICS_BASE(obj) OBJECT_CHECK(ICSState, (obj), TYPE_ICS_SIMPLE)
@@ -187,6 +198,9 @@ void xics_spapr_free(XICSState *icp, int irq, int num);
 
 void xics_cpu_setup(XICSState *icp, PowerPCCPU *cpu);
 void xics_cpu_destroy(XICSState *icp, PowerPCCPU *cpu);
+
+void xics_create_native_icp_node(XICSState *s, void *fdt,
+                                 uint32_t base, uint32_t count);
 
 /* Internal XICS interfaces */
 int xics_get_cpu_index_by_dt_id(int cpu_dt_id);

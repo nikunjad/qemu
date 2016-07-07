@@ -362,35 +362,6 @@ static void xics_kvm_cpu_setup(XICSState *xics, PowerPCCPU *cpu)
     }
 }
 
-static void xics_kvm_set_nr_irqs(XICSState *xics, uint32_t nr_irqs,
-                                 Error **errp)
-{
-    ICSState *ics = QLIST_FIRST(&xics->ics);
-
-    /* This needs to be deprecated ... */
-    xics->nr_irqs = nr_irqs;
-    if (ics) {
-        ics->nr_irqs = nr_irqs;
-    }
-}
-
-static void xics_kvm_set_nr_servers(XICSState *xics, uint32_t nr_servers,
-                                    Error **errp)
-{
-    int i;
-
-    xics->nr_servers = nr_servers;
-
-    xics->ss = g_malloc0(xics->nr_servers * sizeof(ICPState));
-    for (i = 0; i < xics->nr_servers; i++) {
-        char buffer[32];
-        object_initialize(&xics->ss[i], sizeof(xics->ss[i]), TYPE_KVM_ICP);
-        snprintf(buffer, sizeof(buffer), "icp[%d]", i);
-        object_property_add_child(OBJECT(xics), buffer, OBJECT(&xics->ss[i]),
-                                  errp);
-    }
-}
-
 static void rtas_dummy(PowerPCCPU *cpu, sPAPRMachineState *spapr,
                        uint32_t token,
                        uint32_t nargs, target_ulong args,
@@ -492,6 +463,7 @@ static void xics_kvm_initfn(Object *obj)
     XICSState *xics = XICS_COMMON(obj);
     ICSState *ics;
 
+    xics->ss_class = object_class_by_name(TYPE_KVM_ICP);
     ics = ICS_SIMPLE(object_new(TYPE_ICS_KVM));
     object_property_add_child(obj, "ics", OBJECT(ics), NULL);
     ics->xics = xics;
@@ -505,8 +477,8 @@ static void xics_kvm_class_init(ObjectClass *oc, void *data)
 
     dc->realize = xics_kvm_realize;
     xsc->cpu_setup = xics_kvm_cpu_setup;
-    xsc->set_nr_irqs = xics_kvm_set_nr_irqs;
-    xsc->set_nr_servers = xics_kvm_set_nr_servers;
+    xsc->set_nr_irqs = xics_set_nr_irqs;
+    xsc->set_nr_servers = xics_set_nr_servers;
 }
 
 static const TypeInfo xics_spapr_kvm_info = {

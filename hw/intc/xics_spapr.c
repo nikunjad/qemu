@@ -67,7 +67,7 @@ static target_ulong h_xirr(PowerPCCPU *cpu, sPAPRMachineState *spapr,
                            target_ulong opcode, target_ulong *args)
 {
     CPUState *cs = CPU(cpu);
-    uint32_t xirr = icp_accept(spapr->xics->ss + cs->cpu_index);
+    uint32_t xirr = icp_accept(spapr->xics->ss + cs->cpu_index * sizeof(ICPState));
 
     args[0] = xirr;
     return H_SUCCESS;
@@ -77,9 +77,11 @@ static target_ulong h_xirr_x(PowerPCCPU *cpu, sPAPRMachineState *spapr,
                              target_ulong opcode, target_ulong *args)
 {
     CPUState *cs = CPU(cpu);
-    ICPState *ss = &spapr->xics->ss[cs->cpu_index];
-    uint32_t xirr = icp_accept(ss);
+    ICPState *ss;
+    uint32_t xirr;
 
+    ss = spapr->xics->ss + cs->cpu_index * sizeof(ICPState);
+    xirr = icp_accept(ss);
     args[0] = xirr;
     args[1] = cpu_get_host_ticks();
     return H_SUCCESS;
@@ -100,7 +102,8 @@ static target_ulong h_ipoll(PowerPCCPU *cpu, sPAPRMachineState *spapr,
 {
     CPUState *cs = CPU(cpu);
     uint32_t mfrr;
-    uint32_t xirr = icp_ipoll(spapr->xics->ss + cs->cpu_index, &mfrr);
+    uint32_t xirr = icp_ipoll(spapr->xics->ss + cs->cpu_index * sizeof(ICPState),
+                              &mfrr);
 
     args[0] = xirr;
     args[1] = mfrr;
@@ -234,35 +237,6 @@ static void rtas_int_on(PowerPCCPU *cpu, sPAPRMachineState *spapr,
     rtas_st(rets, 0, RTAS_OUT_SUCCESS);
 }
 
-static void xics_spapr_set_nr_irqs(XICSState *xics, uint32_t nr_irqs,
-                                   Error **errp)
-{
-    ICSState *ics = QLIST_FIRST(&xics->ics);
-
-    /* This needs to be deprecated ... */
-    xics->nr_irqs = nr_irqs;
-    if (ics) {
-        ics->nr_irqs = nr_irqs;
-    }
-}
-
-static void xics_spapr_set_nr_servers(XICSState *xics, uint32_t nr_servers,
-                                      Error **errp)
-{
-    int i;
-
-    xics->nr_servers = nr_servers;
-
-    xics->ss = g_malloc0(xics->nr_servers * sizeof(ICPState));
-    for (i = 0; i < xics->nr_servers; i++) {
-        char buffer[32];
-        object_initialize(&xics->ss[i], sizeof(xics->ss[i]), TYPE_ICP);
-        snprintf(buffer, sizeof(buffer), "icp[%d]", i);
-        object_property_add_child(OBJECT(xics), buffer, OBJECT(&xics->ss[i]),
-                                  errp);
-    }
-}
-
 static void xics_spapr_realize(DeviceState *dev, Error **errp)
 {
     XICSState *xics = XICS_SPAPR(dev);
@@ -297,8 +271,8 @@ static void xics_spapr_realize(DeviceState *dev, Error **errp)
     }
 
     for (i = 0; i < xics->nr_servers; i++) {
-        object_property_set_bool(OBJECT(&xics->ss[i]), true, "realized",
-                                 &error);
+        ICPState *ss = xics->ss + i * sizeof(ICPState);
+        object_property_set_bool(OBJECT(ss), true, "realized", &error);
         if (error) {
             error_propagate(errp, error);
             return;
@@ -319,8 +293,8 @@ static void xics_spapr_class_init(ObjectClass *oc, void *data)
     XICSStateClass *xsc = XICS_SPAPR_CLASS(oc);
 
     dc->realize = xics_spapr_realize;
-    xsc->set_nr_irqs = xics_spapr_set_nr_irqs;
-    xsc->set_nr_servers = xics_spapr_set_nr_servers;
+    xsc->set_nr_irqs = xics_set_nr_irqs;
+    xsc->set_nr_servers = xics_set_nr_servers;
 }
 
 static const TypeInfo xics_spapr_info = {

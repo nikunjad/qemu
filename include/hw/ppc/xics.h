@@ -44,7 +44,7 @@
      OBJECT_CHECK(KVMXICSState, (obj), TYPE_XICS_SPAPR_KVM)
 
 #define TYPE_XICS_NATIVE "xics-native"
-#define XICS_NATIVE(obj) OBJECT_CHECK(XICSState, (obj), TYPE_XICS_NATIVE)
+#define XICS_NATIVE(obj) OBJECT_CHECK(XICSNative, (obj), TYPE_XICS_NATIVE)
 
 #define XICS_COMMON_CLASS(klass) \
      OBJECT_CLASS_CHECK(XICSStateClass, (klass), TYPE_XICS_COMMON)
@@ -70,6 +70,7 @@ typedef struct XICSStateClass XICSStateClass;
 typedef struct XICSState XICSState;
 typedef struct ICPStateClass ICPStateClass;
 typedef struct ICPState ICPState;
+typedef struct ICPNative ICPNative;
 typedef struct ICSStateClass ICSStateClass;
 typedef struct ICSState ICSState;
 typedef struct ICSIRQState ICSIRQState;
@@ -77,6 +78,7 @@ typedef struct ICSIRQState ICSIRQState;
 struct XICSStateClass {
     DeviceClass parent_class;
 
+    DeviceRealize realize;
     void (*cpu_setup)(XICSState *icp, PowerPCCPU *cpu);
     void (*set_nr_irqs)(XICSState *icp, uint32_t nr_irqs, Error **errp);
     void (*set_nr_servers)(XICSState *icp, uint32_t nr_servers, Error **errp);
@@ -88,9 +90,9 @@ struct XICSState {
     /*< public >*/
     uint32_t nr_servers;
     uint32_t nr_irqs;
-    ICPState *ss;
+    void *ss;
+    ObjectClass *ss_class;
     QLIST_HEAD(, ICSState) ics;
-    MemoryRegion icp_mmio;
 };
 
 #define TYPE_ICP "icp"
@@ -98,6 +100,9 @@ struct XICSState {
 
 #define TYPE_KVM_ICP "icp-kvm"
 #define KVM_ICP(obj) OBJECT_CHECK(ICPState, (obj), TYPE_KVM_ICP)
+
+#define TYPE_NATIVE_ICP "icp-native"
+#define NATIVE_ICP(obj) OBJECT_CHECK(ICPNative, (obj), TYPE_NATIVE_ICP)
 
 #define ICP_CLASS(klass) \
      OBJECT_CLASS_CHECK(ICPStateClass, (klass), TYPE_ICP)
@@ -122,6 +127,12 @@ struct ICPState {
     uint8_t mfrr;
     qemu_irq output;
     bool cap_irq_xics_enabled;
+};
+
+struct ICPNative {
+    /*<private>*/
+    ICPState icp;
+    /*<public>*/
     uint32_t links[3];
 };
 
@@ -198,6 +209,8 @@ void xics_spapr_free(XICSState *icp, int irq, int num);
 
 void xics_cpu_setup(XICSState *icp, PowerPCCPU *cpu);
 void xics_cpu_destroy(XICSState *icp, PowerPCCPU *cpu);
+void xics_set_nr_irqs(XICSState *xics, uint32_t nr_irqs, Error **errp);
+void xics_set_nr_servers(XICSState *xics, uint32_t nr_servers, Error **errp);
 
 void xics_create_native_icp_node(XICSState *s, void *fdt,
                                  uint32_t base, uint32_t count);

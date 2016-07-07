@@ -54,8 +54,9 @@ int xics_get_cpu_index_by_dt_id(int cpu_dt_id)
 void xics_cpu_destroy(XICSState *xics, PowerPCCPU *cpu)
 {
     CPUState *cs = CPU(cpu);
-    ICPState *ss = &xics->ss[cs->cpu_index];
+    ICPState *ss;
 
+    ss = xics->ss + sizeof(ICPState) * cs->cpu_index;
     assert(cs->cpu_index < xics->nr_servers);
     assert(cs == ss->cs);
 
@@ -67,9 +68,10 @@ void xics_cpu_setup(XICSState *xics, PowerPCCPU *cpu)
 {
     CPUState *cs = CPU(cpu);
     CPUPPCState *env = &cpu->env;
-    ICPState *ss = &xics->ss[cs->cpu_index];
+    ICPState *ss;
     XICSStateClass *info = XICS_COMMON_GET_CLASS(xics);
 
+    ss = xics->ss + sizeof(ICPState) * cs->cpu_index;
     assert(cs->cpu_index < xics->nr_servers);
 
     ss->cs = cs;
@@ -101,10 +103,12 @@ static void xics_common_reset(DeviceState *d)
 {
     XICSState *xics = XICS_COMMON(d);
     ICSState *ics;
+    ICPState *ss;
     int i;
 
     for (i = 0; i < xics->nr_servers; i++) {
-        device_reset(DEVICE(&xics->ss[i]));
+        ss = xics->ss + sizeof(ICPState) * i;
+        device_reset(DEVICE(ss));
     }
 
     QLIST_FOREACH(ics, &xics->ics, list) {
@@ -193,6 +197,7 @@ static void xics_common_initfn(Object *obj)
     XICSState *xics = XICS_COMMON(obj);
 
     QLIST_INIT(&xics->ics);
+    xics->ss_class = object_class_by_name(TYPE_ICP);
     object_property_add(obj, "nr_irqs", "int",
                         xics_prop_get_nr_irqs, xics_prop_set_nr_irqs,
                         NULL, NULL, NULL);
@@ -201,7 +206,15 @@ static void xics_common_initfn(Object *obj)
                         NULL, NULL, NULL);
 
     /* For exclusive use of monitor command */
-    g_xics = XICS_COMMON(obj);
+    g_xics = xics;
+}
+
+static void xics_common_realize(DeviceState *dev, Error **errp)
+{
+    XICSState *xics = XICS_COMMON(dev);
+    XICSStateClass *xsc = XICS_COMMON_GET_CLASS(xics);
+
+    xsc->realize(dev, errp);
 }
 
 static void xics_common_class_init(ObjectClass *oc, void *data)
@@ -209,6 +222,7 @@ static void xics_common_class_init(ObjectClass *oc, void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->reset = xics_common_reset;
+    dc->realize = xics_common_realize;
 }
 
 static const TypeInfo xics_common_info = {
@@ -277,7 +291,7 @@ static void icp_check_ipi(ICPState *ss)
 
 static void icp_resend(XICSState *xics, int server)
 {
-    ICPState *ss = xics->ss + server;
+    ICPState *ss = xics->ss + server * sizeof(ICPState);
     ICSState *ics;
 
     if (ss->mfrr < CPPR(ss)) {
@@ -290,7 +304,7 @@ static void icp_resend(XICSState *xics, int server)
 
 void icp_set_cppr(XICSState *xics, int server, uint8_t cppr)
 {
-    ICPState *ss = xics->ss + server;
+    ICPState *ss = xics->ss + server * sizeof(ICPState);
     uint8_t old_cppr;
     uint32_t old_xisr;
 
@@ -317,7 +331,7 @@ void icp_set_cppr(XICSState *xics, int server, uint8_t cppr)
 
 void icp_set_mfrr(XICSState *xics, int server, uint8_t mfrr)
 {
-    ICPState *ss = xics->ss + server;
+    ICPState *ss = xics->ss + server * sizeof(ICPState);
 
     ss->mfrr = mfrr;
     if (mfrr < CPPR(ss)) {
@@ -349,7 +363,7 @@ uint32_t icp_ipoll(ICPState *ss, uint32_t *mfrr)
 
 void icp_eoi(XICSState *xics, int server, uint32_t xirr)
 {
-    ICPState *ss = xics->ss + server;
+    ICPState *ss = xics->ss + server * sizeof(ICPState);
     ICSState *ics;
     uint32_t irq;
 
@@ -370,7 +384,7 @@ void icp_eoi(XICSState *xics, int server, uint32_t xirr)
 static void icp_irq(ICSState *ics, int server, int nr, uint8_t priority)
 {
     XICSState *xics = ics->xics;
-    ICPState *ss = xics->ss + server;
+    ICPState *ss = xics->ss + server * sizeof(ICPState);
 
     trace_xics_icp_irq(server, nr, priority);
 
@@ -481,6 +495,14 @@ static const TypeInfo icp_info = {
     .name = TYPE_ICP,
     .parent = TYPE_DEVICE,
     .instance_size = sizeof(ICPState),
+    .class_init = icp_class_init,
+    .class_size = sizeof(ICPStateClass),
+};
+
+static const TypeInfo icp_native_info = {
+    .name = TYPE_NATIVE_ICP,
+    .parent = TYPE_ICP,
+    .instance_size = sizeof(ICPNative),
     .class_init = icp_class_init,
     .class_size = sizeof(ICPStateClass),
 };
@@ -685,7 +707,7 @@ void xics_hmp_info_pic(Monitor *mon, const QDict *qdict)
     uint32_t i;
 
     for (i = 0; i < g_xics->nr_servers; i++) {
-        ICPState *icp = &g_xics->ss[i];
+        ICPState *icp = g_xics->ss + i * sizeof(ICPState);
 
         if (!icp->output) {
             continue;
@@ -825,12 +847,44 @@ void ics_set_irq_type(ICSState *ics, int srcno, bool lsi)
         lsi ? XICS_FLAGS_IRQ_LSI : XICS_FLAGS_IRQ_MSI;
 }
 
+void xics_set_nr_irqs(XICSState *xics, uint32_t nr_irqs, Error **errp)
+{
+    ICSState *ics = QLIST_FIRST(&xics->ics);
+
+    /* This needs to be deprecated ... */
+    xics->nr_irqs = nr_irqs;
+    if (ics) {
+        ics->nr_irqs = nr_irqs;
+    }
+}
+
+void xics_set_nr_servers(XICSState *xics, uint32_t nr_servers, Error **errp)
+{
+    int i;
+    const char *typename = object_class_get_name(xics->ss_class);
+    size_t size = object_type_get_instance_size(typename);
+
+    xics->nr_servers = nr_servers;
+
+    xics->ss = g_malloc0(xics->nr_servers * size);
+    for (i = 0; i < xics->nr_servers; i++) {
+        char buffer[32];
+        void *obj;
+
+        obj = xics->ss + size * i;
+        object_initialize(obj, size, typename);
+        snprintf(buffer, sizeof(buffer), "icp[%d]", i);
+        object_property_add_child(OBJECT(xics), buffer, obj, errp);
+    }
+}
+
 static void xics_register_types(void)
 {
     type_register_static(&xics_common_info);
     type_register_static(&ics_simple_info);
     type_register_static(&ics_base_info);
     type_register_static(&icp_info);
+    type_register_static(&icp_native_info);
 }
 
 type_init(xics_register_types)

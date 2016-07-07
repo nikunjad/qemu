@@ -38,11 +38,19 @@
 /* #define DEBUG_MM(fmt...)      printf(fmt) */
 #define DEBUG_MM(fmt...)        do { } while (0)
 
+typedef struct XICSNative {
+    /*< private >*/
+    XICSState xics;
+
+    /*< public >*/
+    MemoryRegion icp_mmio;
+} XICSNative;
+
 static void xics_native_initfn(Object *obj)
 {
-    XICSState *xics = XICS_NATIVE(obj);
+    XICSState *xics = XICS_COMMON(obj);
 
-    QLIST_INIT(&xics->ics);
+    xics->ss_class = object_class_by_name(TYPE_NATIVE_ICP);
 }
 
 static uint64_t icp_mm_read(void *opaque, hwaddr addr, unsigned width)
@@ -51,6 +59,7 @@ static uint64_t icp_mm_read(void *opaque, hwaddr addr, unsigned width)
     int32_t cpu_id, server;
     uint32_t val;
     ICPState *ss;
+    ICPNative *icpn;
     bool byte0 = (width == 1 && (addr & 0x3) == 0);
 
     cpu_id = (addr & (ICP_MM_SIZE - 1)) >> 12;
@@ -59,7 +68,8 @@ static uint64_t icp_mm_read(void *opaque, hwaddr addr, unsigned width)
         fprintf(stderr, "XICS: Bad ICP server %d\n", server);
         goto bad_access;
     }
-    ss = &s->ss[server];
+    icpn = s->ss + server * sizeof(ICPNative);
+    ss = &icpn->icp;
 
     switch (addr & 0xffc) {
     case 0: /* poll */
@@ -88,21 +98,21 @@ static uint64_t icp_mm_read(void *opaque, hwaddr addr, unsigned width)
         break;
     case 16:
         if (width == 4) {
-            val = ss->links[0];
+            val = icpn->links[0];
         } else {
             goto bad_access;
         }
         break;
     case 20:
         if (width == 4) {
-            val = ss->links[1];
+            val = icpn->links[1];
         } else {
             goto bad_access;
         }
         break;
     case 24:
         if (width == 4) {
-            val = ss->links[2];
+            val = icpn->links[2];
         } else {
             goto bad_access;
         }
@@ -125,7 +135,7 @@ static void icp_mm_write(void *opaque, hwaddr addr, uint64_t val,
 {
     XICSState *s = opaque;
     int32_t cpu_id, server;
-    ICPState *ss;
+    ICPNative *icpn;
     bool byte0 = (width == 1 && (addr & 0x3) == 0);
 
     cpu_id = (addr & (ICP_MM_SIZE - 1)) >> 12;
@@ -134,7 +144,8 @@ static void icp_mm_write(void *opaque, hwaddr addr, uint64_t val,
         fprintf(stderr, "XICS: Bad ICP server %d\n", server);
         goto bad_access;
     }
-    ss = &s->ss[server];
+    icpn = s->ss + server * sizeof(ICPNative);
+    ss = &icpn->icp;
 
     DEBUG_MM("icp_mm_write(addr=%016llx,serv=0x%x/%d,off=%d,w=%d,val=0x%08x)\n",
              (unsigned long long)addr, cpu_id, server,
@@ -159,21 +170,21 @@ static void icp_mm_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case 16:
         if (width == 4) {
-            ss->links[0] = val;
+            icpn->links[0] = val;
         } else {
             goto bad_access;
         }
         break;
     case 20:
         if (width == 4) {
-            ss->links[1] = val;
+            icpn->links[1] = val;
         } else {
             goto bad_access;
         }
         break;
     case 24:
         if (width == 4) {
-            ss->links[2] = val;
+            icpn->links[2] = val;
         } else {
             goto bad_access;
         }
@@ -245,8 +256,9 @@ void xics_create_native_icp_node(XICSState *s, void *fdt,
 
 static void xics_native_realize(DeviceState *dev, Error **errp)
 {
-    XICSState *s = XICS_NATIVE(dev);
-    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+    XICSNative *n = XICS_NATIVE(dev);
+    XICSState *s = XICS_COMMON(dev);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(s);
     Error *error = NULL;
     int i;
 
@@ -256,13 +268,14 @@ static void xics_native_realize(DeviceState *dev, Error **errp)
     }
 
     /* Register MMIO regions */
-    memory_region_init_io(&s->icp_mmio, OBJECT(s), &icp_mm_ops, s, "icp",
+    memory_region_init_io(&n->icp_mmio, OBJECT(s), &icp_mm_ops, s, "icp",
                           ICP_MM_SIZE);
-    sysbus_init_mmio(sbd, &s->icp_mmio);
+    sysbus_init_mmio(sbd, &n->icp_mmio);
     sysbus_mmio_map(sbd, 0, ICP_MM_BASE);
 
     for (i = 0; i < s->nr_servers; i++) {
-        object_property_set_bool(OBJECT(&s->ss[i]), true, "realized", &error);
+        ICPNative *icpn = s->ss + i * sizeof(ICPNative);
+        object_property_set_bool(OBJECT(icpn), true, "realized", &error);
         if (error) {
             error_propagate(errp, error);
             return;
@@ -272,20 +285,18 @@ static void xics_native_realize(DeviceState *dev, Error **errp)
 
 static void xics_native_class_init(ObjectClass *oc, void *data)
 {
-    DeviceClass *dc = DEVICE_CLASS(oc);
     XICSStateClass *xsc = XICS_NATIVE_CLASS(oc);
 
-    dc->realize = xics_native_realize;
+    xsc->realize = xics_native_realize;
     xsc->set_nr_servers = xics_set_nr_servers;
 }
 
 static const TypeInfo xics_native_info = {
     .name          = TYPE_XICS_NATIVE,
     .parent        = TYPE_XICS_COMMON,
-    .instance_size = sizeof(XICSState),
+    .instance_size = sizeof(XICSNative),
     .class_size = sizeof(XICSStateClass),
     .class_init    = xics_native_class_init,
-    .instance_init = xics_native_initfn,
 };
 
 static void xics_native_register_types(void)

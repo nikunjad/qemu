@@ -209,7 +209,7 @@ static const TypeInfo xics_common_info = {
 #define CPPR(ss)   (((ss)->xirr) >> 24)
 
 static void ics_reject(ICSState *ics, int nr);
-static void ics_resend(ICSState *ics);
+static void ics_resend(ICSState *ics, int server);
 static void ics_eoi(ICSState *ics, int nr);
 
 static void icp_check_ipi(XICSState *xics, int server)
@@ -238,7 +238,7 @@ static void icp_resend(XICSState *xics, int server)
     if (ss->mfrr < CPPR(ss)) {
         icp_check_ipi(xics, server);
     }
-    ics_resend(xics->ics);
+    ics_resend(xics->ics, server);
 }
 
 void icp_set_cppr(XICSState *xics, int server, uint8_t cppr)
@@ -512,13 +512,23 @@ static void ics_reject(ICSState *ics, int nr)
     }
 }
 
-static void ics_resend(ICSState *ics)
+static void ics_resend(ICSState *ics, int server)
 {
     int i;
+    ICPState *ss = ics->xics->ss + server;
+    ICSIRQState *irq;
 
     for (i = 0; i < ics->nr_irqs; i++) {
         /* FIXME: filter by server#? */
-        if (ics->irqs[i].flags & XICS_FLAGS_IRQ_LSI) {
+        irq = &ics->irqs[i];
+        if (!(irq->flags & XICS_FLAGS_IRQ_MASK))
+            continue;
+
+        if (irq->flags & XICS_FLAGS_IRQ_LSI) {
+            if (irq->status & XICS_STATUS_SENT) {
+                qemu_irq_raise(ss->output);
+                continue;
+            }
             resend_lsi(ics, i);
         } else {
             resend_msi(ics, i);

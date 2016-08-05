@@ -893,6 +893,11 @@ enum {
 #define DBELL_PIRTAG_MASK              0x3fff
 
 /*****************************************************************************/
+/* Server Processor Control */
+#define DBELL_TIRTAG(x)                ((x) & 0x7F)
+#define DBELL_MSGTYPE(x)                (((x) >> 27) & 0x1F)
+
+/*****************************************************************************/
 /* Segment page size information, used by recent hash MMUs
  * The format of this structure mirrors kvm_ppc_smmu_info
  */

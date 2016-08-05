@@ -575,6 +575,7 @@ DEF_HELPER_FLAGS_3(store_sr, TCG_CALL_NO_RWG, void, env, tl, tl)
 
 DEF_HELPER_FLAGS_1(602_mfrom, TCG_CALL_NO_RWG_SE, tl, tl)
 DEF_HELPER_1(msgsnd, void, tl)
+DEF_HELPER_1(msgsndp, void, tl)
 DEF_HELPER_2(msgclr, void, env, tl)
 #endif
 

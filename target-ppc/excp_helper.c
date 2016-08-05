@@ -1116,4 +1116,25 @@ void helper_msgsnd(target_ulong rb)
         }
     }
 }
+
+void helper_msgsndp(target_ulong rb)
+{
+    int tirtag = DBELL_TIRTAG(rb);
+    int msgtype = DBELL_MSGTYPE(rb);
+
+    CPUState *cs;
+
+    abort();
+    if (msgtype != 5) {
+        return;
+    }
+
+    CPU_FOREACH(cs) {
+        PowerPCCPU *cpu = POWERPC_CPU(cs);
+        CPUPPCState *cenv = &cpu->env;
+
+        if (cenv->spr[SPR_TIR]  == tirtag) {
+        }
+    }
+}
 #endif

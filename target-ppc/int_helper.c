@@ -511,6 +511,38 @@ void helper_vaddcuw(ppc_avr_t *r, ppc_avr_t *a, ppc_avr_t *b)
     }
 }
 
+/* vprtyb[w/d] */
+#define VPRTYB(name, element)                               \
+void glue(helper_, name)(ppc_avr_t *vt, ppc_avr_t *vb)      \
+{                                                           \
+    int i, j;                                               \
+    uint8_t s;                                              \
+    int nr_b = sizeof(vb->element[0])/sizeof(vb->u8[0]);    \
+    for (i = 0; i < ARRAY_SIZE(vb->element); i++) {         \
+        s = 0;                                              \
+        for (j = 0; j < nr_b; j++) {                        \
+            s ^= (vb->u8[i * nr_b + j] & 0x01);             \
+        }                                                   \
+        vt->element[i] = (!s) ? 0:1;                        \
+    }                                                       \
+}
+VPRTYB(vprtybw, u32)
+VPRTYB(vprtybd, u64)
+#undef VPTRYB
+
+/* vprtybq */
+void helper_vprtybq(ppc_avr_t *vt, ppc_avr_t *vb)
+{
+	int i;
+	uint8_t s;
+	int nr_b = sizeof(vb->u128)/sizeof(vb->u8[0]);
+	s = 0;
+	for (i = 0; i < nr_b; i++) {
+		s ^= (vb->u8[i] & 0x01);
+	}
+	vt->u128 = (!s) ? 0:1;
+}
+
 #define VARITH_DO(name, op, element)                                    \
     void helper_v##name(ppc_avr_t *r, ppc_avr_t *a, ppc_avr_t *b)       \
     {                                                                   \

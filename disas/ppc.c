@@ -2176,6 +2176,9 @@ const struct powerpc_opcode powerpc_opcodes[] = {
   /* End of double-precision opcodes.  */
 
 { "vaddcuw", VX(4,  384), VX_MASK,	PPCVEC,		{ VD, VA, VB } },
+{ "vprtybw", VX(4,  1538), VX_MASK,	PPCVEC,		{ VD, VB } },
+{ "vprtybd", VX(4,  1538), VX_MASK,	PPCVEC,		{ VD, VB } },
+{ "vprtybq", VX(4,  1538), VX_MASK,	PPCVEC,		{ VD, VB } },
 { "vaddfp",  VX(4,   10), VX_MASK, 	PPCVEC,		{ VD, VA, VB } },
 { "vaddsbs", VX(4,  768), VX_MASK,	PPCVEC,		{ VD, VA, VB } },
 { "vaddshs", VX(4,  832), VX_MASK,	PPCVEC,		{ VD, VA, VB } },

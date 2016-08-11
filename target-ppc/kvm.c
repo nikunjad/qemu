@@ -2090,7 +2090,7 @@ void kvmppc_set_mpic_proxy(PowerPCCPU *cpu, int mpic_proxy)
 
 int kvmppc_smt_threads(void)
 {
-    return cap_ppc_smt ? cap_ppc_smt : 1;
+    return cap_ppc_smt ? cap_ppc_smt : 8;
 }
 
 #ifdef TARGET_PPC64

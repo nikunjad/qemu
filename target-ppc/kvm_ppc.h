@@ -128,7 +128,7 @@ static inline void kvmppc_set_mpic_proxy(PowerPCCPU *cpu, int mpic_proxy)
 
 static inline int kvmppc_smt_threads(void)
 {
-    return 1;
+    return 8;
 }
 
 static inline int kvmppc_or_tsr_bits(PowerPCCPU *cpu, uint32_t tsr_bits)

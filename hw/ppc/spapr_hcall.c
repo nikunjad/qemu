@@ -1075,20 +1075,27 @@ target_ulong spapr_hypercall(PowerPCCPU *cpu, target_ulong opcode,
                              target_ulong *args)
 {
     sPAPRMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
+    target_ulong ret;
 
     if ((opcode <= MAX_HCALL_OPCODE)
         && ((opcode & 0x3) == 0)) {
         spapr_hcall_fn fn = papr_hypercall_table[opcode / 4];
 
         if (fn) {
-            return fn(cpu, spapr, opcode, args);
+            qemu_mutex_lock_iothread();
+            ret = fn(cpu, spapr, opcode, args);
+            qemu_mutex_unlock_iothread();
+            return ret;
         }
     } else if ((opcode >= KVMPPC_HCALL_BASE) &&
                (opcode <= KVMPPC_HCALL_MAX)) {
         spapr_hcall_fn fn = kvmppc_hypercall_table[opcode - KVMPPC_HCALL_BASE];
 
         if (fn) {
-            return fn(cpu, spapr, opcode, args);
+            qemu_mutex_lock_iothread();
+            ret = fn(cpu, spapr, opcode, args);
+            qemu_mutex_unlock_iothread();
+            return ret;
         }
     }
 

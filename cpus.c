@@ -1342,6 +1342,7 @@ static void *qemu_tcg_cpu_thread_fn(void *arg)
 {
     CPUState *cpu = arg;
 
+    printf("%s: tid: %d cpu: %p\n", __func__, qemu_get_thread_id(), cpu);
     rcu_register_thread();
 
     qemu_mutex_lock_iothread();
@@ -1546,6 +1547,7 @@ static void qemu_tcg_init_vcpu(CPUState *cpu)
         qemu_cond_init(cpu->halt_cond);
 
         if (qemu_tcg_mttcg_enabled()) {
+            printf("%s: enabled tid: %d cpu: %p\n", __func__, qemu_get_thread_id(), cpu);
             /* create a thread per vCPU with TCG (MTTCG) */
             snprintf(thread_name, VCPU_THREAD_NAME_SIZE, "CPU %d/TCG",
                  cpu->cpu_index);
@@ -1554,6 +1556,7 @@ static void qemu_tcg_init_vcpu(CPUState *cpu)
                                cpu, QEMU_THREAD_JOINABLE);
 
         } else {
+            printf("%s: disabled\n", __func__);
             /* share a single thread for all cpus with TCG */
             snprintf(thread_name, VCPU_THREAD_NAME_SIZE, "ALL CPUs/TCG");
             qemu_thread_create(cpu->thread, thread_name,
@@ -1570,6 +1573,7 @@ static void qemu_tcg_init_vcpu(CPUState *cpu)
             qemu_cond_wait(&qemu_cpu_cond, &qemu_global_mutex);
         }
     } else {
+        printf("%s: disabled\n", __func__);
         /* For non-MTTCG cases we share the thread */
         cpu->thread = single_tcg_cpu_thread;
         cpu->halt_cond = single_tcg_halt_cond;

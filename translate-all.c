@@ -60,7 +60,7 @@
 
 /* #define DEBUG_TB_INVALIDATE */
 /* #define DEBUG_TB_FLUSH */
-/* #define DEBUG_LOCKING */
+#define DEBUG_LOCKING
 /* make various TB consistency checks */
 /* #define DEBUG_TB_CHECK */
 
@@ -891,7 +891,7 @@ static void do_tb_flush(CPUState *cpu, void *data)
         return;
     }
 #if defined(DEBUG_TB_FLUSH)
-    printf("qemu: flush code_size=%ld nb_tbs=%d avg_tb_size=%ld\n",
+    fprintf(stderr, "%s: flush code_size=%ld nb_tbs=%d avg_tb_size=%ld\n", __func__,
            (unsigned long)(tcg_ctx.code_gen_ptr - tcg_ctx.code_gen_buffer),
            tcg_ctx.tb_ctx.nb_tbs, tcg_ctx.tb_ctx.nb_tbs > 0 ?
            ((unsigned long)(tcg_ctx.code_gen_ptr - tcg_ctx.code_gen_buffer)) /

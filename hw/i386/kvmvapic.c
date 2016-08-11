@@ -17,6 +17,7 @@
 #include "sysemu/kvm.h"
 #include "hw/i386/apic_internal.h"
 #include "hw/sysbus.h"
+#include "tcg/tcg.h"
 
 #define VAPIC_IO_PORT           0x7e
 
@@ -449,6 +450,9 @@ static void patch_instruction(VAPICROMState *s, X86CPU *cpu, target_ulong ip)
     resume_all_vcpus();
 
     if (!kvm_enabled()) {
+        /* Both tb_lock and iothread_mutex will be reset when
+         *  longjmps back into the cpu_exec loop. */
+        tb_lock();
         tb_gen_code(cs, current_pc, current_cs_base, current_flags, 1);
         cpu_loop_exit_noexc(cs);
     }
@@ -483,7 +487,7 @@ typedef struct VAPICEnableTPRReporting {
     bool enable;
 } VAPICEnableTPRReporting;
 
-static void vapic_do_enable_tpr_reporting(void *data)
+static void vapic_do_enable_tpr_reporting(CPUState *cpu, void *data)
 {
     VAPICEnableTPRReporting *info = data;
 
@@ -734,10 +738,10 @@ static void vapic_realize(DeviceState *dev, Error **errp)
     nb_option_roms++;
 }
 
-static void do_vapic_enable(void *data)
+static void do_vapic_enable(CPUState *cs, void *data)
 {
     VAPICROMState *s = data;
-    X86CPU *cpu = X86_CPU(first_cpu);
+    X86CPU *cpu = X86_CPU(cs);
 
     static const uint8_t enabled = 1;
     cpu_physical_memory_write(s->vapic_paddr + offsetof(VAPICState, enabled),

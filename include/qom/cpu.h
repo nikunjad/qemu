@@ -232,12 +232,13 @@ struct kvm_run;
 #define TB_JMP_CACHE_SIZE (1 << TB_JMP_CACHE_BITS)
 
 /* work queue */
+typedef void (*run_on_cpu_func)(CPUState *cpu, void *data);
+
 struct qemu_work_item {
-    struct qemu_work_item *next;
-    void (*func)(void *data);
+    run_on_cpu_func func;
     void *data;
-    int done;
-    bool free;
+    bool *done;
+    bool safe;
 };
 
 /**
@@ -257,7 +258,6 @@ struct qemu_work_item {
  * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
  * @tcg_exit_req: Set to force TCG to stop executing linked TBs for this
  *           CPU and return to its top level loop.
- * @tb_flushed: Indicates the translation buffer has been flushed.
  * @singlestep_enabled: Flags for single-stepping.
  * @icount_extra: Instructions until next timer event.
  * @icount_decr: Number of cycles left, with interrupt flag in high bit.
@@ -310,14 +310,14 @@ struct CPUState {
     bool unplug;
     bool crash_occurred;
     bool exit_request;
-    bool tb_flushed;
+    /* updates protected by BQL */
     uint32_t interrupt_request;
     int singlestep_enabled;
     int64_t icount_extra;
     sigjmp_buf jmp_env;
 
     QemuMutex work_mutex;
-    struct qemu_work_item *queued_work_first, *queued_work_last;
+    GArray *queued_work;
 
     CPUAddressSpace *cpu_ases;
     int num_ases;
@@ -325,7 +325,10 @@ struct CPUState {
     MemoryRegion *memory;
 
     void *env_ptr; /* CPUArchState */
+
+    /* Writes protected by tb_lock, reads not thread-safe  */
     struct TranslationBlock *tb_jmp_cache[TB_JMP_CACHE_SIZE];
+
     struct GDBRegisterState *gdb_regs;
     int gdb_num_regs;
     int gdb_num_g_regs;
@@ -368,6 +371,12 @@ struct CPUState {
      */
     bool throttle_thread_scheduled;
 
+    /* The pending_tlb_flush flag is set and cleared atomically to
+     * avoid potential races. The aim of the flag is to avoid
+     * unnecessary flushes.
+     */
+    uint16_t pending_tlb_flush;
+
     /* Note that this is accessed at the start of every TB via a negative
        offset from AREG0.  Leave this field at the end so as to make the
        (absolute value) offset as small as possible.  This reduces code
@@ -386,6 +395,15 @@ extern struct CPUTailQ cpus;
 #define first_cpu QTAILQ_FIRST(&cpus)
 
 extern __thread CPUState *current_cpu;
+
+/**
+ * qemu_tcg_mttcg_enabled:
+ * Check whether we are running MultiThread TCG or not.
+ *
+ * Returns: %true if we are in MTTCG mode %false otherwise.
+ */
+extern bool mttcg_enabled;
+#define qemu_tcg_mttcg_enabled() (mttcg_enabled)
 
 /**
  * cpu_paging_enabled:
@@ -623,7 +641,7 @@ bool cpu_is_stopped(CPUState *cpu);
  *
  * Schedules the function @func for execution on the vCPU @cpu.
  */
-void run_on_cpu(CPUState *cpu, void (*func)(void *data), void *data);
+void run_on_cpu(CPUState *cpu, run_on_cpu_func func, void *data);
 
 /**
  * async_run_on_cpu:
@@ -633,7 +651,28 @@ void run_on_cpu(CPUState *cpu, void (*func)(void *data), void *data);
  *
  * Schedules the function @func for execution on the vCPU @cpu asynchronously.
  */
-void async_run_on_cpu(CPUState *cpu, void (*func)(void *data), void *data);
+void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, void *data);
+
+/**
+ * async_safe_run_on_cpu:
+ * @cpu: The vCPU to run on.
+ * @func: The function to be executed.
+ * @data: Data to pass to the function.
+ *
+ * Schedules the function @func for execution on the vCPU @cpu asynchronously
+ * and in quiescent state. Quiescent state means: (1) all other vCPUs are
+ * halted and (2) #qemu_global_mutex (a.k.a. BQL) in system-mode or
+ * #exclusive_lock in user-mode emulation is held while @func is executing.
+ */
+void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func, void *data);
+
+/**
+ * cpu_has_queued_work:
+ * @cpu: The vCPU to check
+ *
+ * Returns true if there is *_run_on_cpu work to be done.
+ */
+bool cpu_has_queued_work(CPUState *cpu);
 
 /**
  * qemu_get_cpu:

@@ -23,8 +23,7 @@
 #include "exec/exec-all.h"
 #include "exec/memory-internal.h"
 
-bool exit_request;
-CPUState *tcg_current_cpu;
+int tcg_pending_threads;
 
 /* exit the current TB, but without causing any exception to be raised */
 void cpu_loop_exit_noexc(CPUState *cpu)
@@ -76,4 +75,179 @@ void cpu_loop_exit_restore(CPUState *cpu, uintptr_t pc)
         cpu_restore_state(cpu, pc);
     }
     siglongjmp(cpu->jmp_env, 1);
+}
+
+void cpu_loop_exit_atomic(CPUState *cpu, uintptr_t pc)
+{
+    cpu->exception_index = EXCP_ATOMIC;
+    cpu_loop_exit_restore(cpu, pc);
+}
+
+QemuCond qemu_work_cond;
+QemuCond qemu_safe_work_cond;
+QemuCond qemu_exclusive_cond;
+
+static int safe_work_pending;
+
+/* No vCPUs can sleep while there is safe work pending as we need
+ * everything to finish up in process_cpu_work.
+ */
+bool cpu_has_queued_work(CPUState *cpu)
+{
+    if (cpu->queued_work || atomic_mb_read(&safe_work_pending) > 0) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+#ifdef CONFIG_USER_ONLY
+#define can_wait_for_safe() (1)
+#else
+/*
+ * We never sleep in SoftMMU emulation because we would deadlock as
+ * all vCPUs are in the same thread. This will change for MTTCG
+ * however.
+ */
+extern int smp_cpus;
+#define can_wait_for_safe() (mttcg_enabled && smp_cpus > 1)
+#endif
+
+void wait_safe_cpu_work(void)
+{
+    while (can_wait_for_safe() && atomic_mb_read(&safe_work_pending) > 0) {
+        /*
+         * If there is pending safe work and no pending threads we
+         * need to signal another thread to start its work.
+         */
+        if (tcg_pending_threads == 0) {
+            qemu_cond_signal(&qemu_exclusive_cond);
+        }
+        qemu_cond_wait(&qemu_safe_work_cond, qemu_get_cpu_work_mutex());
+    }
+}
+
+static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
+{
+    qemu_mutex_lock(&cpu->work_mutex);
+
+    if (!cpu->queued_work) {
+        cpu->queued_work = g_array_sized_new(true, true,
+                             sizeof(struct qemu_work_item), 16);
+    }
+
+    g_array_append_val(cpu->queued_work, *wi);
+    if (wi->safe) {
+        atomic_inc(&safe_work_pending);
+    }
+
+    qemu_mutex_unlock(&cpu->work_mutex);
+
+    if (!wi->safe) {
+        qemu_cpu_kick(cpu);
+    } else {
+        CPU_FOREACH(cpu) {
+            qemu_cpu_kick(cpu);
+        }
+    }
+}
+
+void run_on_cpu(CPUState *cpu, run_on_cpu_func func, void *data)
+{
+    struct qemu_work_item wi;
+    bool done = false;
+
+    /* Always true when using tcg RR scheduling from a vCPU context */
+    if (qemu_cpu_is_self(cpu)) {
+        func(cpu, data);
+        return;
+    }
+
+    wi.func = func;
+    wi.data = data;
+    wi.safe = false;
+    wi.done = &done;
+
+    queue_work_on_cpu(cpu, &wi);
+    while (!atomic_mb_read(&done)) {
+        CPUState *self_cpu = current_cpu;
+
+        qemu_cond_wait(&qemu_work_cond, qemu_get_cpu_work_mutex());
+        current_cpu = self_cpu;
+    }
+}
+
+void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, void *data)
+{
+    struct qemu_work_item wi;
+
+    /* Always true when using tcg RR scheduling from a vCPU context */
+    if (qemu_cpu_is_self(cpu)) {
+        func(cpu, data);
+        return;
+    }
+
+    wi.func = func;
+    wi.data = data;
+    wi.safe = false;
+    wi.done = NULL;
+
+    queue_work_on_cpu(cpu, &wi);
+}
+
+void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func, void *data)
+{
+    struct qemu_work_item wi;
+
+    wi.func = func;
+    wi.data = data;
+    wi.safe = true;
+    wi.done = NULL;
+
+    queue_work_on_cpu(cpu, &wi);
+}
+
+void process_queued_cpu_work(CPUState *cpu)
+{
+    struct qemu_work_item *wi;
+    GArray *work_list = NULL;
+    int i;
+
+    qemu_mutex_lock(&cpu->work_mutex);
+
+    work_list = cpu->queued_work;
+    cpu->queued_work = NULL;
+
+    qemu_mutex_unlock(&cpu->work_mutex);
+
+    if (work_list) {
+
+        g_assert(work_list->len > 0);
+
+        for (i = 0; i < work_list->len; i++) {
+            wi = &g_array_index(work_list, struct qemu_work_item, i);
+
+            if (wi->safe) {
+                while (tcg_pending_threads) {
+                    qemu_cond_wait(&qemu_exclusive_cond,
+                                   qemu_get_cpu_work_mutex());
+                }
+            }
+
+            wi->func(cpu, wi->data);
+
+            if (wi->safe) {
+                if (!atomic_dec_fetch(&safe_work_pending)) {
+                    qemu_cond_broadcast(&qemu_safe_work_cond);
+                }
+            }
+
+            if (wi->done) {
+                atomic_mb_set(wi->done, true);
+            }
+        }
+
+        qemu_cond_broadcast(&qemu_work_cond);
+        g_array_free(work_list, true);
+    }
 }

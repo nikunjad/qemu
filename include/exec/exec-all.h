@@ -71,6 +71,7 @@ static inline void cpu_list_lock(void)
 void cpu_exec_init(CPUState *cpu, Error **errp);
 void QEMU_NORETURN cpu_loop_exit(CPUState *cpu);
 void QEMU_NORETURN cpu_loop_exit_restore(CPUState *cpu, uintptr_t pc);
+void QEMU_NORETURN cpu_loop_exit_atomic(CPUState *cpu, uintptr_t pc);
 
 #if !defined(CONFIG_USER_ONLY)
 void cpu_reloading_memory_map(void);
@@ -171,6 +172,7 @@ void tlb_set_page(CPUState *cpu, target_ulong vaddr,
 void tb_invalidate_phys_addr(AddressSpace *as, hwaddr addr);
 void probe_write(CPUArchState *env, target_ulong addr, int mmu_idx,
                  uintptr_t retaddr);
+void tlb_flush_page_all(target_ulong addr);
 #else
 static inline void tlb_flush_page(CPUState *cpu, target_ulong addr)
 {
@@ -224,6 +226,8 @@ struct TranslationBlock {
 #define CF_NOCACHE     0x10000 /* To be freed after execution */
 #define CF_USE_ICOUNT  0x20000
 #define CF_IGNORE_ICOUNT 0x40000 /* Do not generate icount code */
+
+    uint16_t invalid;
 
     void *tc_ptr;    /* pointer to the translated code */
     uint8_t *tc_search;  /* pointer to search data */
@@ -325,6 +329,7 @@ static inline void tb_set_jmp_target(TranslationBlock *tb,
 
 #endif
 
+/* Called with tb_lock held.  */
 static inline void tb_add_jump(TranslationBlock *tb, int n,
                                TranslationBlock *tb_next)
 {
@@ -381,6 +386,7 @@ void tlb_fill(CPUState *cpu, target_ulong addr, MMUAccessType access_type,
 #if defined(CONFIG_USER_ONLY)
 void mmap_lock(void);
 void mmap_unlock(void);
+bool have_mmap_lock(void);
 
 static inline tb_page_addr_t get_page_addr_code(CPUArchState *env1, target_ulong addr)
 {
@@ -416,7 +422,36 @@ bool memory_region_is_unassigned(MemoryRegion *mr);
 extern int singlestep;
 
 /* cpu-exec.c, accessed with atomic_mb_read/atomic_mb_set */
-extern CPUState *tcg_current_cpu;
-extern bool exit_request;
+extern int tcg_pending_threads;
+
+/**
+ * qemu_work_cond - condition to wait for CPU work items completion
+ */
+extern QemuCond qemu_work_cond;
+/**
+ * qemu_safe_work_cond - condition to wait for safe CPU work items completion
+ */
+extern QemuCond qemu_safe_work_cond;
+/**
+ * qemu_exclusive_cond - condition to wait for all TCG threads to be out of
+ *                       guest code execution loop
+ */
+extern QemuCond qemu_exclusive_cond;
+
+/**
+ * qemu_get_cpu_work_mutex() - get the mutex which protects CPU work execution
+ *
+ * Return: A pointer to the mutex.
+ */
+QemuMutex *qemu_get_cpu_work_mutex(void);
+/**
+ * process_queued_cpu_work() - process all items on CPU work queue
+ * @cpu: The CPU which work queue to process.
+ */
+void process_queued_cpu_work(CPUState *cpu);
+/**
+ * wait_safe_cpu_work() - wait until all safe CPU work items has processed
+ */
+void wait_safe_cpu_work(void);
 
 #endif

@@ -3097,28 +3097,31 @@ static void gen_isync(DisasContext *ctx)
     gen_stop_exception(ctx);
 }
 
-#define LARX(name, len, loadop)                                      \
+#define MEMOP_GET_SIZE(x)  (1 << ((x) & MO_SIZE))
+
+#define LARX(name, memop)                                            \
 static void gen_##name(DisasContext *ctx)                            \
 {                                                                    \
     TCGv t0;                                                         \
     TCGv gpr = cpu_gpr[rD(ctx->opcode)];                             \
+    int len = MEMOP_GET_SIZE(memop);                                 \
     gen_set_access_type(ctx, ACCESS_RES);                            \
     t0 = tcg_temp_local_new();                                       \
     gen_addr_reg_index(ctx, t0);                                     \
     if ((len) > 1) {                                                 \
         gen_check_align(ctx, t0, (len)-1);                           \
     }                                                                \
-    gen_qemu_##loadop(ctx, gpr, t0);                                 \
+    tcg_gen_qemu_ld_tl(gpr, t0, ctx->mem_idx,                        \
+                       memop | ctx->default_tcg_memop_mask);         \
     tcg_gen_mov_tl(cpu_reserve, t0);                                 \
     tcg_gen_st_tl(gpr, cpu_env, offsetof(CPUPPCState, reserve_val)); \
     tcg_temp_free(t0);                                               \
 }
 
 /* lwarx */
-LARX(lbarx, 1, ld8u);
-LARX(lharx, 2, ld16u);
-LARX(lwarx, 4, ld32u);
-
+LARX(lbarx, MO_UB);
+LARX(lharx, MO_UW);
+LARX(lwarx, MO_UL);
 
 #if defined(CONFIG_USER_ONLY)
 static void gen_conditional_store(DisasContext *ctx, TCGv EA,
@@ -3134,7 +3137,7 @@ static void gen_conditional_store(DisasContext *ctx, TCGv EA,
 }
 #else
 static void gen_conditional_store(DisasContext *ctx, TCGv EA,
-                                  int reg, int size)
+                                  int reg, int memop)
 {
     TCGLabel *l1;
 
@@ -3142,65 +3145,37 @@ static void gen_conditional_store(DisasContext *ctx, TCGv EA,
     l1 = gen_new_label();
     tcg_gen_brcond_tl(TCG_COND_NE, EA, cpu_reserve, l1);
     tcg_gen_ori_i32(cpu_crf[0], cpu_crf[0], 1 << CRF_EQ);
-#if defined(TARGET_PPC64)
-    if (size == 8) {
-        gen_qemu_st64(ctx, cpu_gpr[reg], EA);
-    } else
-#endif
-    if (size == 4) {
-        gen_qemu_st32(ctx, cpu_gpr[reg], EA);
-    } else if (size == 2) {
-        gen_qemu_st16(ctx, cpu_gpr[reg], EA);
-#if defined(TARGET_PPC64)
-    } else if (size == 16) {
-        TCGv gpr1, gpr2 , EA8;
-        if (unlikely(ctx->le_mode)) {
-            gpr1 = cpu_gpr[reg+1];
-            gpr2 = cpu_gpr[reg];
-        } else {
-            gpr1 = cpu_gpr[reg];
-            gpr2 = cpu_gpr[reg+1];
-        }
-        gen_qemu_st64(ctx, gpr1, EA);
-        EA8 = tcg_temp_local_new();
-        gen_addr_add(ctx, EA8, EA, 8);
-        gen_qemu_st64(ctx, gpr2, EA8);
-        tcg_temp_free(EA8);
-#endif
-    } else {
-        gen_qemu_st8(ctx, cpu_gpr[reg], EA);
-    }
+    tcg_gen_qemu_st_tl(cpu_gpr[reg], EA, ctx->mem_idx,
+                       memop | ctx->default_tcg_memop_mask);
     gen_set_label(l1);
     tcg_gen_movi_tl(cpu_reserve, -1);
 }
 #endif
 
-#define STCX(name, len)                                   \
-static void gen_##name(DisasContext *ctx)                 \
-{                                                         \
-    TCGv t0;                                              \
-    if (unlikely((len == 16) && (rD(ctx->opcode) & 1))) { \
-        gen_inval_exception(ctx,                          \
-                            POWERPC_EXCP_INVAL_INVAL);    \
-        return;                                           \
-    }                                                     \
-    gen_set_access_type(ctx, ACCESS_RES);                 \
-    t0 = tcg_temp_local_new();                            \
-    gen_addr_reg_index(ctx, t0);                          \
-    if (len > 1) {                                        \
-        gen_check_align(ctx, t0, (len)-1);                \
-    }                                                     \
-    gen_conditional_store(ctx, t0, rS(ctx->opcode), len); \
-    tcg_temp_free(t0);                                    \
+#define STCX(name, memop)                                   \
+static void gen_##name(DisasContext *ctx)                   \
+{                                                           \
+    TCGv t0;                                                \
+    int len = MEMOP_GET_SIZE(memop);                        \
+    gen_set_access_type(ctx, ACCESS_RES);                   \
+    t0 = tcg_temp_local_new();                              \
+    gen_addr_reg_index(ctx, t0);                            \
+    if (len > 1) {                                          \
+        gen_check_align(ctx, t0, (len)-1);                  \
+    }                                                       \
+    gen_conditional_store(ctx, t0, rS(ctx->opcode), memop); \
+    tcg_temp_free(t0);                                      \
 }
 
-STCX(stbcx_, 1);
-STCX(sthcx_, 2);
-STCX(stwcx_, 4);
+STCX(stbcx_, MO_8);
+STCX(sthcx_, MO_16);
+STCX(stwcx_, MO_32);
 
 #if defined(TARGET_PPC64)
 /* ldarx */
-LARX(ldarx, 8, ld64);
+LARX(ldarx, MO_64);
+/* stdcx. */
+STCX(stdcx_, MO_64);
 
 /* lqarx */
 static void gen_lqarx(DisasContext *ctx)
@@ -3226,21 +3201,65 @@ static void gen_lqarx(DisasContext *ctx)
         gpr1 = cpu_gpr[rd];
         gpr2 = cpu_gpr[rd+1];
     }
-    gen_qemu_ld64(ctx, gpr1, EA);
+    tcg_gen_qemu_ld_i64(gpr1, EA, ctx->mem_idx,
+                        MO_Q | ctx->default_tcg_memop_mask);
     tcg_gen_mov_tl(cpu_reserve, EA);
-
     gen_addr_add(ctx, EA, EA, 8);
-    gen_qemu_ld64(ctx, gpr2, EA);
+    tcg_gen_qemu_ld_i64(gpr2, EA, ctx->mem_idx,
+                        MO_Q | ctx->default_tcg_memop_mask);
 
     tcg_gen_st_tl(gpr1, cpu_env, offsetof(CPUPPCState, reserve_val));
     tcg_gen_st_tl(gpr2, cpu_env, offsetof(CPUPPCState, reserve_val2));
-
     tcg_temp_free(EA);
 }
 
-/* stdcx. */
-STCX(stdcx_, 8);
-STCX(stqcx_, 16);
+/* stqcx. */
+static void gen_stqcx_(DisasContext *ctx)
+{
+    TCGv EA;
+    int reg = rS(ctx->opcode);
+    int len = 16;
+#if !defined(CONFIG_USER_ONLY)
+    TCGLabel *l1;
+    TCGv gpr1, gpr2;
+#endif
+
+    if (unlikely((rD(ctx->opcode) & 1))) {
+        gen_inval_exception(ctx, POWERPC_EXCP_INVAL_INVAL);
+        return;
+    }
+    gen_set_access_type(ctx, ACCESS_RES);
+    EA = tcg_temp_local_new();
+    gen_addr_reg_index(ctx, EA);
+    if (len > 1) {
+        gen_check_align(ctx, EA, (len)-1);
+    }
+
+#if defined(CONFIG_USER_ONLY)
+    gen_conditional_store(ctx, EA, reg, 16);
+#else
+    tcg_gen_trunc_tl_i32(cpu_crf[0], cpu_so);
+    l1 = gen_new_label();
+    tcg_gen_brcond_tl(TCG_COND_NE, EA, cpu_reserve, l1);
+    tcg_gen_ori_i32(cpu_crf[0], cpu_crf[0], 1 << CRF_EQ);
+
+    if (unlikely(ctx->le_mode)) {
+        gpr1 = cpu_gpr[reg+1];
+        gpr2 = cpu_gpr[reg];
+    } else {
+        gpr1 = cpu_gpr[reg];
+        gpr2 = cpu_gpr[reg+1];
+    }
+    tcg_gen_qemu_st_tl(gpr1, EA, ctx->mem_idx, MO_Q | ctx->default_tcg_memop_mask);
+    gen_addr_add(ctx, EA, EA, 8);
+    tcg_gen_qemu_st_tl(gpr2, EA, ctx->mem_idx, MO_Q | ctx->default_tcg_memop_mask);
+
+    gen_set_label(l1);
+    tcg_gen_movi_tl(cpu_reserve, -1);
+#endif
+    tcg_temp_free(EA);
+}
+
 #endif /* defined(TARGET_PPC64) */
 
 /* sync */

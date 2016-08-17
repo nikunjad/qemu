@@ -588,7 +588,7 @@ void probe_write(CPUArchState *env, target_ulong addr, int mmu_idx,
         }                                                               \
                                                                         \
         /* Notice an IO access.  */                                     \
-        if (unlikely(tlb_addr & ~TARGET_PAGE_MASK)) {                   \
+        if (unlikely((tlb_addr & ~TARGET_PAGE_MASK) & TLB_MMIO)) {      \
             /* There's really nothing that can be done to               \
                support this apart from stop-the-world.  */              \
             cpu_loop_exit_atomic(ENV_GET_CPU(env), retaddr);            \

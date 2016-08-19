@@ -116,6 +116,8 @@ void tlb_flush_page(CPUState *cpu, target_ulong addr);
  * TLB entries, and the argument is ignored.
  */
 void tlb_flush(CPUState *cpu, int flush_global);
+void tlb_flush_all(CPUState *cpu, int flush_global);
+
 /**
  * tlb_flush_page_by_mmuidx:
  * @cpu: CPU whose TLB should be flushed

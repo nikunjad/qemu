@@ -123,6 +123,21 @@ void tlb_flush(CPUState *cpu, int flush_global)
     }
 }
 
+static void tlb_flush_all_async_work(CPUState *cpu, void *opaque)
+{
+    tlb_flush_nocheck(cpu, GPOINTER_TO_INT(opaque));
+}
+
+void tlb_flush_all(CPUState *cpu, int flush_global)
+{
+    CPUState *c;
+
+    CPU_FOREACH(c) {
+        async_run_on_cpu(c, tlb_flush_all_async_work,
+                         GUINT_TO_POINTER(flush_global));
+    }
+}
+
 static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, void *mmu_bitmask)
 {
     CPUArchState *env = cpu->env_ptr;

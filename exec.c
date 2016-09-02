@@ -320,9 +320,9 @@ static inline bool section_covers_addr(const MemoryRegionSection *section,
     /* Memory topology clips a memory region to [0, 2^64); size.hi > 0 means
      * the section must cover the entire address space.
      */
-    return section->size.hi ||
+    return int128_gethi(section->size) ||
            range_covers_byte(section->offset_within_address_space,
-                             section->size.lo, addr);
+                             int128_getlo(section->size), addr);
 }
 
 static MemoryRegionSection *phys_page_find(PhysPageEntry lp, hwaddr addr,
@@ -680,7 +680,11 @@ void cpu_exec_init(CPUState *cpu, Error **errp)
 #if defined(CONFIG_USER_ONLY)
 static void breakpoint_invalidate(CPUState *cpu, target_ulong pc)
 {
+    mmap_lock();
+    tb_lock();
     tb_invalidate_phys_page_range(pc, pc + 1, 0);
+    tb_unlock();
+    mmap_unlock();
 }
 #else
 static void breakpoint_invalidate(CPUState *cpu, target_ulong pc)
@@ -689,6 +693,7 @@ static void breakpoint_invalidate(CPUState *cpu, target_ulong pc)
     hwaddr phys = cpu_get_phys_page_attrs_debug(cpu, pc, &attrs);
     int asidx = cpu_asidx_from_attrs(cpu, attrs);
     if (phys != -1) {
+        /* Locks grabbed by tb_invalidate_phys_addr */
         tb_invalidate_phys_addr(cpu->cpu_ases[asidx].as,
                                 phys | (pc & ~TARGET_PAGE_MASK));
     }
@@ -1973,7 +1978,11 @@ ram_addr_t qemu_ram_addr_from_host(void *ptr)
 static void notdirty_mem_write(void *opaque, hwaddr ram_addr,
                                uint64_t val, unsigned size)
 {
+    bool locked = false;
+
     if (!cpu_physical_memory_get_dirty_flag(ram_addr, DIRTY_MEMORY_CODE)) {
+        locked = true;
+        tb_lock();
         tb_invalidate_phys_page_fast(ram_addr, size);
     }
     switch (size) {
@@ -1989,6 +1998,11 @@ static void notdirty_mem_write(void *opaque, hwaddr ram_addr,
     default:
         abort();
     }
+
+    if (locked) {
+        tb_unlock();
+    }
+
     /* Set both VGA and migration bits for simplicity and to remove
      * the notdirty callback faster.
      */
@@ -2049,6 +2063,12 @@ static void check_watchpoint(int offset, int len, MemTxAttrs attrs, int flags)
                     continue;
                 }
                 cpu->watchpoint_hit = wp;
+
+                /* Both tb_lock and iothread_mutex will be reset when
+                 * cpu_loop_exit or cpu_loop_exit_noexc longjmp
+                 * back into the cpu_exec main loop.
+                 */
+                tb_lock();
                 tb_check_watchpoint(cpu);
                 if (wp->flags & BP_STOP_BEFORE_ACCESS) {
                     cpu->exception_index = EXCP_DEBUG;
@@ -2282,8 +2302,14 @@ static void io_mem_init(void)
     memory_region_init_io(&io_mem_rom, NULL, &unassigned_mem_ops, NULL, NULL, UINT64_MAX);
     memory_region_init_io(&io_mem_unassigned, NULL, &unassigned_mem_ops, NULL,
                           NULL, UINT64_MAX);
+
+    /* io_mem_notdirty calls tb_invalidate_phys_page_fast,
+     * which can be called without the iothread mutex.
+     */
     memory_region_init_io(&io_mem_notdirty, NULL, &notdirty_mem_ops, NULL,
                           NULL, UINT64_MAX);
+    memory_region_clear_global_locking(&io_mem_notdirty);
+
     memory_region_init_io(&io_mem_watch, NULL, &watch_mem_ops, NULL,
                           NULL, UINT64_MAX);
 }
@@ -2457,7 +2483,9 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
             cpu_physical_memory_range_includes_clean(addr, length, dirty_log_mask);
     }
     if (dirty_log_mask & (1 << DIRTY_MEMORY_CODE)) {
+        tb_lock();
         tb_invalidate_phys_range(addr, addr + length);
+        tb_unlock();
         dirty_log_mask &= ~(1 << DIRTY_MEMORY_CODE);
     }
     cpu_physical_memory_set_dirty_range(addr, length, dirty_log_mask);

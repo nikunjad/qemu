@@ -31,6 +31,7 @@
 #include "tcg.h"
 #if defined(CONFIG_USER_ONLY)
 #include "qemu.h"
+#include "exec/exec-all.h"
 #if defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
 #include <sys/param.h>
 #if __FreeBSD_version >= 700104
@@ -54,16 +55,44 @@
 #include "translate-all.h"
 #include "qemu/bitmap.h"
 #include "qemu/timer.h"
+#include "qemu/main-loop.h"
 #include "exec/log.h"
 
-//#define DEBUG_TB_INVALIDATE
-//#define DEBUG_FLUSH
+/* #define DEBUG_TB_INVALIDATE */
+/* #define DEBUG_TB_FLUSH */
+/* #define DEBUG_LOCKING */
 /* make various TB consistency checks */
-//#define DEBUG_TB_CHECK
+/* #define DEBUG_TB_CHECK */
 
 #if !defined(CONFIG_USER_ONLY)
 /* TB consistency checks only implemented for usermode emulation.  */
 #undef DEBUG_TB_CHECK
+#endif
+
+/* Access to the various translations structures need to be serialised via locks
+ * for consistency. This is automatic for SoftMMU based system
+ * emulation due to its single threaded nature. In user-mode emulation
+ * access to the memory related structures are protected with the
+ * mmap_lock.
+ */
+#ifdef DEBUG_LOCKING
+#define DEBUG_MEM_LOCKS 1
+#else
+#define DEBUG_MEM_LOCKS 0
+#endif
+
+#ifdef CONFIG_SOFTMMU
+#define assert_memory_lock() do {           \
+        if (DEBUG_MEM_LOCKS) {              \
+            g_assert(have_tb_lock);         \
+        }                                   \
+    } while (0)
+#else
+#define assert_memory_lock() do {               \
+        if (DEBUG_MEM_LOCKS) {                  \
+            g_assert(have_mmap_lock());         \
+        }                                       \
+    } while (0)
 #endif
 
 #define SMC_BITMAP_USE_THRESHOLD 10
@@ -119,39 +148,45 @@ static void *l1_map[V_L1_SIZE];
 
 /* code generation context */
 TCGContext tcg_ctx;
+bool parallel_cpus = 1;
 
 /* translation block context */
-#ifdef CONFIG_USER_ONLY
 __thread int have_tb_lock;
-#endif
 
 void tb_lock(void)
 {
-#ifdef CONFIG_USER_ONLY
     assert(!have_tb_lock);
     qemu_mutex_lock(&tcg_ctx.tb_ctx.tb_lock);
     have_tb_lock++;
-#endif
 }
 
 void tb_unlock(void)
 {
-#ifdef CONFIG_USER_ONLY
     assert(have_tb_lock);
     have_tb_lock--;
     qemu_mutex_unlock(&tcg_ctx.tb_ctx.tb_lock);
-#endif
 }
 
 void tb_lock_reset(void)
 {
-#ifdef CONFIG_USER_ONLY
     if (have_tb_lock) {
         qemu_mutex_unlock(&tcg_ctx.tb_ctx.tb_lock);
         have_tb_lock = 0;
     }
-#endif
 }
+
+#ifdef DEBUG_LOCKING
+#define DEBUG_TB_LOCKS 1
+#else
+#define DEBUG_TB_LOCKS 0
+#endif
+
+#define assert_tb_lock() do {               \
+        if (DEBUG_TB_LOCKS) {               \
+            g_assert(have_tb_lock);         \
+        }                                   \
+    } while (0)
+
 
 static TranslationBlock *tb_find_pc(uintptr_t tc_ptr);
 
@@ -247,7 +282,9 @@ static int encode_search(TranslationBlock *tb, uint8_t *block)
     return p - block;
 }
 
-/* The cpu state corresponding to 'searched_pc' is restored.  */
+/* The cpu state corresponding to 'searched_pc' is restored.
+ * Called with tb_lock held.
+ */
 static int cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
                                      uintptr_t searched_pc)
 {
@@ -304,8 +341,10 @@ bool cpu_restore_state(CPUState *cpu, uintptr_t retaddr)
         cpu_restore_state_from_tb(cpu, tb, retaddr);
         if (tb->cflags & CF_NOCACHE) {
             /* one-shot translation, invalidate it immediately */
+            tb_lock();
             tb_phys_invalidate(tb, -1);
             tb_free(tb);
+            tb_unlock();
         }
         return true;
     }
@@ -397,6 +436,7 @@ static void page_init(void)
 }
 
 /* If alloc=1:
+ * Called with tb_lock held for system emulation.
  * Called with mmap_lock held for user-mode emulation.
  */
 static PageDesc *page_find_alloc(tb_page_addr_t index, int alloc)
@@ -404,6 +444,10 @@ static PageDesc *page_find_alloc(tb_page_addr_t index, int alloc)
     PageDesc *pd;
     void **lp;
     int i;
+
+    if (alloc) {
+        assert_memory_lock();
+    }
 
     /* Level 1.  Always allocated.  */
     lp = l1_map + ((index >> V_L1_SHIFT) & (V_L1_SIZE - 1));
@@ -761,11 +805,17 @@ bool tcg_enabled(void)
     return tcg_ctx.code_gen_buffer != NULL;
 }
 
-/* Allocate a new translation block. Flush the translation buffer if
-   too many translation blocks or too much generated code. */
+/*
+ * Allocate a new translation block. Flush the translation buffer if
+ * too many translation blocks or too much generated code.
+ *
+ * Called with tb_lock held.
+ */
 static TranslationBlock *tb_alloc(target_ulong pc)
 {
     TranslationBlock *tb;
+
+    assert_tb_lock();
 
     if (tcg_ctx.tb_ctx.nb_tbs >= tcg_ctx.code_gen_max_blocks) {
         return NULL;
@@ -773,11 +823,15 @@ static TranslationBlock *tb_alloc(target_ulong pc)
     tb = &tcg_ctx.tb_ctx.tbs[tcg_ctx.tb_ctx.nb_tbs++];
     tb->pc = pc;
     tb->cflags = 0;
+    tb->invalid = false;
     return tb;
 }
 
+/* Called with tb_lock held.  */
 void tb_free(TranslationBlock *tb)
 {
+    assert_tb_lock();
+
     /* In practice this is mostly used for single use temporary TB
        Ignore the hard cases and just back up if this TB happens to
        be the last one generated.  */
@@ -831,10 +885,12 @@ static void page_flush_tb(void)
 }
 
 /* flush all the translation blocks */
-/* XXX: tb_flush is currently not thread safe */
-void tb_flush(CPUState *cpu)
+static void do_tb_flush(CPUState *cpu, void *data)
 {
-#if defined(DEBUG_FLUSH)
+    if (tcg_ctx.tb_ctx.nb_tbs == 0) {
+        return;
+    }
+#if defined(DEBUG_TB_FLUSH)
     printf("qemu: flush code_size=%ld nb_tbs=%d avg_tb_size=%ld\n",
            (unsigned long)(tcg_ctx.code_gen_ptr - tcg_ctx.code_gen_buffer),
            tcg_ctx.tb_ctx.nb_tbs, tcg_ctx.tb_ctx.nb_tbs > 0 ?
@@ -845,13 +901,16 @@ void tb_flush(CPUState *cpu)
         > tcg_ctx.code_gen_buffer_size) {
         cpu_abort(cpu, "Internal error: code buffer overflow\n");
     }
-    tcg_ctx.tb_ctx.nb_tbs = 0;
 
     CPU_FOREACH(cpu) {
-        memset(cpu->tb_jmp_cache, 0, sizeof(cpu->tb_jmp_cache));
-        cpu->tb_flushed = true;
+        int i;
+
+        for (i = 0; i < TB_JMP_CACHE_SIZE; ++i) {
+            atomic_set(&cpu->tb_jmp_cache[i], NULL);
+        }
     }
 
+    tcg_ctx.tb_ctx.nb_tbs = 0;
     qht_reset_size(&tcg_ctx.tb_ctx.htable, CODE_GEN_HTABLE_SIZE);
     page_flush_tb();
 
@@ -859,6 +918,11 @@ void tb_flush(CPUState *cpu)
     /* XXX: flush processor icache at this point if cache flush is
        expensive */
     tcg_ctx.tb_ctx.tb_flush_count++;
+}
+
+void tb_flush(CPUState *cpu)
+{
+    async_safe_run_on_cpu(cpu, do_tb_flush, NULL);
 }
 
 #ifdef DEBUG_TB_CHECK
@@ -875,7 +939,11 @@ do_tb_invalidate_check(struct qht *ht, void *p, uint32_t hash, void *userp)
     }
 }
 
-static void tb_invalidate_check(target_ulong address)
+/* verify that all the pages have correct rights for code
+ *
+ * Called with tb_lock held.
+ */
+static void tb_page_check(void)
 {
     address &= TARGET_PAGE_MASK;
     qht_iter(&tcg_ctx.tb_ctx.htable, do_tb_invalidate_check, &address);
@@ -979,13 +1047,20 @@ static inline void tb_jmp_unlink(TranslationBlock *tb)
     }
 }
 
-/* invalidate one TB */
+/* invalidate one TB
+ *
+ * Called with tb_lock held.
+ */
 void tb_phys_invalidate(TranslationBlock *tb, tb_page_addr_t page_addr)
 {
     CPUState *cpu;
     PageDesc *p;
     uint32_t h;
     tb_page_addr_t phys_pc;
+
+    assert_tb_lock();
+
+    atomic_set(&tb->invalid, true);
 
     /* remove the TB from the hash list */
     phys_pc = tb->page_addr[0] + (tb->pc & ~TARGET_PAGE_MASK);
@@ -1007,8 +1082,8 @@ void tb_phys_invalidate(TranslationBlock *tb, tb_page_addr_t page_addr)
     /* remove the TB from the hash list */
     h = tb_jmp_cache_hash_func(tb->pc);
     CPU_FOREACH(cpu) {
-        if (cpu->tb_jmp_cache[h] == tb) {
-            cpu->tb_jmp_cache[h] = NULL;
+        if (atomic_read(&cpu->tb_jmp_cache[h]) == tb) {
+            atomic_set(&cpu->tb_jmp_cache[h], NULL);
         }
     }
 
@@ -1042,7 +1117,7 @@ static void build_page_bitmap(PageDesc *p)
             tb_end = tb_start + tb->size;
             if (tb_end > TARGET_PAGE_SIZE) {
                 tb_end = TARGET_PAGE_SIZE;
-            }
+             }
         } else {
             tb_start = 0;
             tb_end = ((tb->pc + tb->size) & ~TARGET_PAGE_MASK);
@@ -1064,6 +1139,8 @@ static inline void tb_alloc_page(TranslationBlock *tb,
 #ifndef CONFIG_USER_ONLY
     bool page_already_protected;
 #endif
+
+    assert_memory_lock();
 
     tb->page_addr[n] = page_addr;
     p = page_find_alloc(page_addr >> TARGET_PAGE_BITS, 1);
@@ -1121,9 +1198,7 @@ static void tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
 {
     uint32_t h;
 
-    /* add in the hash table */
-    h = tb_hash_func(phys_pc, tb->pc, tb->flags);
-    qht_insert(&tcg_ctx.tb_ctx.htable, tb, h);
+    assert_memory_lock();
 
     /* add in the page list */
     tb_alloc_page(tb, 0, phys_pc & TARGET_PAGE_MASK);
@@ -1132,6 +1207,10 @@ static void tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
     } else {
         tb->page_addr[1] = -1;
     }
+
+    /* add in the hash table */
+    h = tb_hash_func(phys_pc, tb->pc, tb->flags);
+    qht_insert(&tcg_ctx.tb_ctx.htable, tb, h);
 
 #ifdef DEBUG_TB_CHECK
     tb_page_check();
@@ -1152,6 +1231,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
 #ifdef CONFIG_PROFILER
     int64_t ti;
 #endif
+    assert_memory_lock();
 
     phys_pc = get_page_addr_code(env, pc);
     if (use_icount && !(cflags & CF_IGNORE_ICOUNT)) {
@@ -1163,9 +1243,8 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
  buffer_overflow:
         /* flush must be done */
         tb_flush(cpu);
-        /* cannot fail at this point */
-        tb = tb_alloc(pc);
-        assert(tb != NULL);
+        mmap_unlock();
+        cpu_loop_exit(cpu);
     }
 
     gen_code_buf = tcg_ctx.code_gen_ptr;
@@ -1277,9 +1356,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
  * access: the virtual CPU will exit the current TB if code is modified inside
  * this TB.
  *
- * Called with mmap_lock held for user-mode emulation
+ * Called with mmap_lock held for user-mode emulation, grabs tb_lock
+ * Called with tb_lock held for system-mode emulation
  */
-void tb_invalidate_phys_range(tb_page_addr_t start, tb_page_addr_t end)
+static void tb_invalidate_phys_range_1(tb_page_addr_t start, tb_page_addr_t end)
 {
     while (start < end) {
         tb_invalidate_phys_page_range(start, end, 0);
@@ -1288,6 +1368,21 @@ void tb_invalidate_phys_range(tb_page_addr_t start, tb_page_addr_t end)
     }
 }
 
+#ifdef CONFIG_SOFTMMU
+void tb_invalidate_phys_range(tb_page_addr_t start, tb_page_addr_t end)
+{
+    assert_tb_lock();
+    tb_invalidate_phys_range_1(start, end);
+}
+#else
+void tb_invalidate_phys_range(tb_page_addr_t start, tb_page_addr_t end)
+{
+    assert_memory_lock();
+    tb_lock();
+    tb_invalidate_phys_range_1(start, end);
+    tb_unlock();
+}
+#endif
 /*
  * Invalidate all TBs which intersect with the target physical address range
  * [start;end[. NOTE: start and end must refer to the *same* physical page.
@@ -1295,7 +1390,8 @@ void tb_invalidate_phys_range(tb_page_addr_t start, tb_page_addr_t end)
  * access: the virtual CPU will exit the current TB if code is modified inside
  * this TB.
  *
- * Called with mmap_lock held for user-mode emulation
+ * Called with tb_lock/mmap_lock held for user-mode emulation
+ * Called with tb_lock held for system-mode emulation
  */
 void tb_invalidate_phys_page_range(tb_page_addr_t start, tb_page_addr_t end,
                                    int is_cpu_write_access)
@@ -1316,6 +1412,9 @@ void tb_invalidate_phys_page_range(tb_page_addr_t start, tb_page_addr_t end,
     target_ulong current_cs_base = 0;
     uint32_t current_flags = 0;
 #endif /* TARGET_HAS_PRECISE_SMC */
+
+    assert_memory_lock();
+    assert_tb_lock();
 
     p = page_find(start >> TARGET_PAGE_BITS);
     if (!p) {
@@ -1392,7 +1491,10 @@ void tb_invalidate_phys_page_range(tb_page_addr_t start, tb_page_addr_t end,
 }
 
 #ifdef CONFIG_SOFTMMU
-/* len must be <= 8 and start must be a multiple of len */
+/* len must be <= 8 and start must be a multiple of len.
+ * Called via softmmu_template.h when code areas are written to with
+ * tb_lock held.
+ */
 void tb_invalidate_phys_page_fast(tb_page_addr_t start, int len)
 {
     PageDesc *p;
@@ -1406,13 +1508,17 @@ void tb_invalidate_phys_page_fast(tb_page_addr_t start, int len)
                   (intptr_t)cpu_single_env->segs[R_CS].base);
     }
 #endif
+    assert_memory_lock();
+
     p = page_find(start >> TARGET_PAGE_BITS);
     if (!p) {
         return;
     }
     if (!p->code_bitmap &&
         ++p->code_write_count >= SMC_BITMAP_USE_THRESHOLD) {
-        /* build code bitmap */
+        /* build code bitmap.  FIXME: writes should be protected by
+         * tb_lock, reads by tb_lock or RCU.
+         */
         build_page_bitmap(p);
     }
     if (p->code_bitmap) {
@@ -1451,11 +1557,15 @@ static bool tb_invalidate_phys_page(tb_page_addr_t addr, uintptr_t pc)
     uint32_t current_flags = 0;
 #endif
 
+    assert_memory_lock();
+
     addr &= TARGET_PAGE_MASK;
     p = page_find(addr >> TARGET_PAGE_BITS);
     if (!p) {
         return false;
     }
+
+    tb_lock();
     tb = p->first_tb;
 #ifdef TARGET_HAS_PRECISE_SMC
     if (tb && pc != 0) {
@@ -1493,9 +1603,13 @@ static bool tb_invalidate_phys_page(tb_page_addr_t addr, uintptr_t pc)
            modifying the memory. It will ensure that it cannot modify
            itself */
         tb_gen_code(cpu, current_pc, current_cs_base, current_flags, 1);
+        /* tb_lock will be reset after cpu_loop_exit_noexc longjmps
+         * back into the cpu_exec loop. */
         return true;
     }
 #endif
+    tb_unlock();
+
     return false;
 }
 #endif
@@ -1548,11 +1662,14 @@ void tb_invalidate_phys_addr(AddressSpace *as, hwaddr addr)
         return;
     }
     ram_addr = memory_region_get_ram_addr(mr) + addr;
+    tb_lock();
     tb_invalidate_phys_page_range(ram_addr, ram_addr + 1, 0);
+    tb_unlock();
     rcu_read_unlock();
 }
 #endif /* !defined(CONFIG_USER_ONLY) */
 
+/* Called with tb_lock held.  */
 void tb_check_watchpoint(CPUState *cpu)
 {
     TranslationBlock *tb;
@@ -1578,7 +1695,10 @@ void tb_check_watchpoint(CPUState *cpu)
 
 #ifndef CONFIG_USER_ONLY
 /* in deterministic execution mode, instructions doing device I/Os
-   must be at the end of the TB */
+ * must be at the end of the TB.
+ *
+ * Called by softmmu_template.h, with iothread mutex not held.
+ */
 void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
 {
 #if defined(TARGET_MIPS) || defined(TARGET_SH4)
@@ -1589,6 +1709,7 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
     target_ulong pc, cs_base;
     uint32_t flags;
 
+    tb_lock();
     tb = tb_find_pc(retaddr);
     if (!tb) {
         cpu_abort(cpu, "cpu_io_recompile: could not find TB for pc=%p",
@@ -1640,11 +1761,16 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
     /* FIXME: In theory this could raise an exception.  In practice
        we have already translated the block once so it's probably ok.  */
     tb_gen_code(cpu, pc, cs_base, flags, cflags);
+
     /* TODO: If env->pc != tb->pc (i.e. the faulting instruction was not
-       the first in the TB) then we end up generating a whole new TB and
-       repeating the fault, which is horribly inefficient.
-       Better would be to execute just this insn uncached, or generate a
-       second new TB.  */
+     * the first in the TB) then we end up generating a whole new TB and
+     *  repeating the fault, which is horribly inefficient.
+     *  Better would be to execute just this insn uncached, or generate a
+     *  second new TB.
+     *
+     * cpu_loop_exit_noexc will longjmp back to cpu_exec where the
+     * tb_lock gets reset.
+     */
     cpu_loop_exit_noexc(cpu);
 }
 
@@ -1708,6 +1834,8 @@ void dump_exec_info(FILE *f, fprintf_function cpu_fprintf)
     TranslationBlock *tb;
     struct qht_stats hst;
 
+    tb_lock();
+
     target_code_size = 0;
     max_target_code_size = 0;
     cross_page = 0;
@@ -1768,6 +1896,8 @@ void dump_exec_info(FILE *f, fprintf_function cpu_fprintf)
             tcg_ctx.tb_ctx.tb_phys_invalidate_count);
     cpu_fprintf(f, "TLB flush count     %d\n", tlb_flush_count);
     tcg_dump_info(f, cpu_fprintf);
+
+    tb_unlock();
 }
 
 void dump_opcount_info(FILE *f, fprintf_function cpu_fprintf)
@@ -1779,6 +1909,7 @@ void dump_opcount_info(FILE *f, fprintf_function cpu_fprintf)
 
 void cpu_interrupt(CPUState *cpu, int mask)
 {
+    g_assert(qemu_mutex_iothread_locked());
     cpu->interrupt_request |= mask;
     cpu->tcg_exit_req = 1;
 }
@@ -1920,6 +2051,7 @@ void page_set_flags(target_ulong start, target_ulong end, int flags)
     assert(end < ((target_ulong)1 << L1_MAP_ADDR_SPACE_BITS));
 #endif
     assert(start < end);
+    assert_memory_lock();
 
     start = start & TARGET_PAGE_MASK;
     end = TARGET_PAGE_ALIGN(end);

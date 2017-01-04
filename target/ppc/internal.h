@@ -206,6 +206,7 @@ typedef union _ppc_vsr_t {
     uint64_t u64[2];
     float32 f32[4];
     float64 f64[2];
+    float128 f128;
     Int128  s128;
 } ppc_vsr_t;
 

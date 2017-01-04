@@ -245,4 +245,5 @@ static inline void putVSR(int n, ppc_vsr_t *vsr, CPUPPCState *env)
 
 void helper_compute_fprf_float128(CPUPPCState *env, float128 arg);
 void helper_compute_fprf_float16(CPUPPCState *env, float16 arg);
+void helper_compute_fprf_float32(CPUPPCState *env, float32 arg);
 #endif /* PPC_INTERNAL_H */

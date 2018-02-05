@@ -14,6 +14,11 @@ static inline TCGv_ptr gen_avr_ptr(int reg)
     return r;
 }
 
+static inline int cpu_avr_offset(int regno)
+{
+    return offsetof(CPUPPCState, avr[regno]);
+}
+
 #define GEN_VR_LDX(name, opc2, opc3)                                          \
 static void glue(gen_, name)(DisasContext *ctx)                                       \
 {                                                                             \
@@ -240,14 +245,27 @@ static void glue(gen_, name)(DisasContext *ctx)                                 
     tcg_op(cpu_avrl[rD(ctx->opcode)], cpu_avrl[rA(ctx->opcode)], cpu_avrl[rB(ctx->opcode)]); \
 }
 
-GEN_VX_LOGICAL(vand, tcg_gen_and_i64, 2, 16);
-GEN_VX_LOGICAL(vandc, tcg_gen_andc_i64, 2, 17);
-GEN_VX_LOGICAL(vor, tcg_gen_or_i64, 2, 18);
-GEN_VX_LOGICAL(vxor, tcg_gen_xor_i64, 2, 19);
 GEN_VX_LOGICAL(vnor, tcg_gen_nor_i64, 2, 20);
 GEN_VX_LOGICAL(veqv, tcg_gen_eqv_i64, 2, 26);
 GEN_VX_LOGICAL(vnand, tcg_gen_nand_i64, 2, 22);
-GEN_VX_LOGICAL(vorc, tcg_gen_orc_i64, 2, 21);
+
+#define GEN_VX_LOGICAL_VEC(name, tcg_op, opc2, opc3)                    \
+static void glue(gen_, name)(DisasContext *ctx)                         \
+{                                                                       \
+    if (unlikely(!ctx->altivec_enabled)) {                              \
+        gen_exception(ctx, POWERPC_EXCP_VPU);                           \
+        return;                                                         \
+    }                                                                   \
+    tcg_op(0, cpu_avr_offset(rD(ctx->opcode)),                          \
+           cpu_avr_offset(rA(ctx->opcode)),                             \
+           cpu_avr_offset(rB(ctx->opcode)), 16, 16);                    \
+}
+
+GEN_VX_LOGICAL_VEC(vand,  tcg_gen_gvec_and,  2, 16);
+GEN_VX_LOGICAL_VEC(vandc, tcg_gen_gvec_andc, 2, 17);
+GEN_VX_LOGICAL_VEC(vor,   tcg_gen_gvec_or,   2, 18);
+GEN_VX_LOGICAL_VEC(vxor,  tcg_gen_gvec_xor,  2, 19);
+GEN_VX_LOGICAL_VEC(vorc,  tcg_gen_gvec_orc,  2, 21);
 
 #define GEN_VXFORM(name, opc2, opc3)                                    \
 static void glue(gen_, name)(DisasContext *ctx)                                 \

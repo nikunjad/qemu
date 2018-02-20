@@ -234,20 +234,23 @@ GEN_VX_VMUL10(vmul10cuq, 0, 1);
 GEN_VX_VMUL10(vmul10ecuq, 1, 1);
 
 /* Logical operations */
-#define GEN_VX_LOGICAL(name, tcg_op, opc2, opc3)                        \
+#define GEN_VX_LOGICAL_VEC_NOT(name, tcg_op, opc2, opc3)                \
 static void glue(gen_, name)(DisasContext *ctx)                                 \
 {                                                                       \
     if (unlikely(!ctx->altivec_enabled)) {                              \
         gen_exception(ctx, POWERPC_EXCP_VPU);                           \
         return;                                                         \
     }                                                                   \
-    tcg_op(cpu_avrh[rD(ctx->opcode)], cpu_avrh[rA(ctx->opcode)], cpu_avrh[rB(ctx->opcode)]); \
-    tcg_op(cpu_avrl[rD(ctx->opcode)], cpu_avrl[rA(ctx->opcode)], cpu_avrl[rB(ctx->opcode)]); \
+    tcg_op(0, cpu_avr_offset(rD(ctx->opcode)),                          \
+           cpu_avr_offset(rA(ctx->opcode)),                             \
+           cpu_avr_offset(rB(ctx->opcode)), 16, 16);                    \
+    tcg_gen_gvec_not(0, cpu_avr_offset(rD(ctx->opcode)),                \
+                     cpu_avr_offset(rD(ctx->opcode)), 16, 16);          \
 }
 
-GEN_VX_LOGICAL(vnor, tcg_gen_nor_i64, 2, 20);
-GEN_VX_LOGICAL(veqv, tcg_gen_eqv_i64, 2, 26);
-GEN_VX_LOGICAL(vnand, tcg_gen_nand_i64, 2, 22);
+GEN_VX_LOGICAL_VEC_NOT(vnor,  tcg_gen_gvec_or,  2, 20);
+GEN_VX_LOGICAL_VEC_NOT(vnand, tcg_gen_gvec_and, 2, 22);
+GEN_VX_LOGICAL_VEC_NOT(veqv,  tcg_gen_gvec_xor, 2, 26);
 
 #define GEN_VX_LOGICAL_VEC(name, tcg_op, opc2, opc3)                    \
 static void glue(gen_, name)(DisasContext *ctx)                         \

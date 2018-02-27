@@ -56,12 +56,14 @@ static char cpu_reg_names[10*3 + 22*4 /* GPR */
     + 10*4 + 22*5 /* SPE GPRh */
     + 10*4 + 22*5 /* FPR */
     + 2*(10*6 + 22*7) /* AVRh, AVRl */
+    + 10*5 + 22*6 /* AVR */
     + 10*5 + 22*6 /* VSR */
     + 8*5 /* CRF */];
 static TCGv cpu_gpr[32];
 static TCGv cpu_gprh[32];
 static TCGv_i64 cpu_fpr[32];
 static TCGv_i64 cpu_avrh[32], cpu_avrl[32];
+static TCGv_vec cpu_avr[32];
 static TCGv_i64 cpu_vsr[32];
 static TCGv_i32 cpu_crf[8];
 static TCGv cpu_nip;
@@ -135,6 +137,13 @@ void ppc_translate_init(void)
 #endif
         p += (i < 10) ? 6 : 7;
         cpu_reg_names_size -= (i < 10) ? 6 : 7;
+
+        snprintf(p, cpu_reg_names_size, "avr%d", i);
+        cpu_avr[i] = tcg_global_mem_new_vec(cpu_env,
+                                            offsetof(CPUPPCState, avr[i].u128), p);
+        p += (i < 10) ? 5 : 6;
+        cpu_reg_names_size -= (i < 10) ? 5 : 6;
+
         snprintf(p, cpu_reg_names_size, "vsr%d", i);
         cpu_vsr[i] = tcg_global_mem_new_i64(cpu_env,
                                             offsetof(CPUPPCState, vsr[i]), p);

@@ -591,6 +591,25 @@ static void glue(gen_, name)(DisasContext *ctx)                         \
     GEN_VXRFORM1(name, name, #name, opc2, opc3)                      \
     GEN_VXRFORM1(name##_dot, name##_, #name ".", opc2, (opc3 | (0x1 << 4)))
 
+
+#define GEN_VXRFORM1_VEC(name, opname, opcond, mo_sz, opc2, opc3, crf)  \
+static void glue(gen_, name)(DisasContext *ctx)                         \
+{                                                                       \
+    int ra, rb, rd;                                                     \
+    if (unlikely(!ctx->altivec_enabled)) {                              \
+        gen_exception(ctx, POWERPC_EXCP_VPU);                           \
+        return;                                                         \
+    }                                                                   \
+    ra = cpu_avr_offset(rA(ctx->opcode));                               \
+    rb = cpu_avr_offset(rB(ctx->opcode));                               \
+    rd = cpu_avr_offset(rD(ctx->opcode));                               \
+    opname(opcond, mo_sz, rd, ra, rb, MEMOP_GET_BITS(mo_sz), 16);       \
+}
+
+#define GEN_VXRFORM_VEC(name, opname, opcond, oprsz, opc2, opc3)        \
+    GEN_VXRFORM1_VEC(name,    opname, opcond, oprsz, opc2, opc3, 0)     \
+    GEN_VXRFORM1_VEC(name##_, opname, opcond, oprsz, opc2, (opc3 | (0x1 << 4)), 1)
+
 /*
  * Support for Altivec instructions that use bit 31 (Rc) as an opcode
  * bit but also use bit 21 as an actual Rc bit.  In general, thse pairs
@@ -619,10 +638,11 @@ static void glue(gen_, name0##_##name1)(DisasContext *ctx)             \
     }                                                                  \
 }
 
-GEN_VXRFORM(vcmpequb, 3, 0)
-GEN_VXRFORM(vcmpequh, 3, 1)
-GEN_VXRFORM(vcmpequw, 3, 2)
-GEN_VXRFORM(vcmpequd, 3, 3)
+GEN_VXRFORM_VEC(vcmpequb, tcg_gen_gvec_cmp, TCG_COND_EQ,  MO_8, 3, 0)
+GEN_VXRFORM_VEC(vcmpequh, tcg_gen_gvec_cmp, TCG_COND_EQ, MO_16, 3, 1)
+GEN_VXRFORM_VEC(vcmpequw, tcg_gen_gvec_cmp, TCG_COND_EQ, MO_32, 3, 2)
+GEN_VXRFORM_VEC(vcmpequd, tcg_gen_gvec_cmp, TCG_COND_EQ, MO_64, 3, 3)
+
 GEN_VXRFORM(vcmpnezb, 3, 4)
 GEN_VXRFORM(vcmpnezh, 3, 5)
 GEN_VXRFORM(vcmpnezw, 3, 6)

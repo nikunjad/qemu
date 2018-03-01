@@ -3020,6 +3020,7 @@ static void gen_isync(DisasContext *ctx)
 }
 
 #define MEMOP_GET_SIZE(x)  (1 << ((x) & MO_SIZE))
+#define MEMOP_GET_BITS(x)  (MEMOP_GET_SIZE(x) * 8)
 
 #define LARX(name, memop)                                            \
 static void gen_##name(DisasContext *ctx)                            \

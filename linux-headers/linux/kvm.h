@@ -2043,7 +2043,8 @@ struct kvm_sev_snp_launch_start {
 	__u8 ma_en;
 	__u8 imi_en;
 	__u8 gosvw[16];
-	__u8 pad[6];
+	__u8 pad[2];
+	__u32 desired_tsc_freq;
 };
 
 #define KVM_SEV_SNP_PAGE_TYPE_NORMAL		0x1

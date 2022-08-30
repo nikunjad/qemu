@@ -914,6 +914,7 @@
 #             guest, as documented for the 'HOST_DATA' parameter of the
 #             SNP_LAUNCH_FINISH command in the SEV-SNP firmware ABI
 #             (default: all-zero)
+# @secure-tsc: true if secure tsc is to be enabled in a SNP guest (default: false)
 #
 # Since: 7.2
 ##
@@ -927,7 +928,8 @@
             '*id-auth': 'str',
             '*auth-key-enabled': 'bool',
             '*kernel-hashes': 'bool',
-            '*host-data': 'str' } }
+            '*host-data': 'str',
+            '*secure-tsc': 'bool' } }
 
 ##
 # @ThreadContextProperties:

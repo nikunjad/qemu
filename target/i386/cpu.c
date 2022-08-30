@@ -745,6 +745,21 @@ FeatureWordInfo feature_word_info[FEATURE_WORDS] = {
          */
         .no_autoenable_flags = CPUID_EXT3_TOPOEXT,
     },
+    [FEAT_8000_001F_EAX] = {
+        .type = CPUID_FEATURE_WORD,
+        .feat_names = {
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            "securetsc", NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+        },
+        .cpuid = { .eax = 0x8000001F, .reg = R_EAX, },
+        .tcg_features = 0,
+    },
     [FEAT_C000_0001_EDX] = {
         .type = CPUID_FEATURE_WORD,
         .feat_names = {
@@ -6082,7 +6097,9 @@ void cpu_x86_cpuid(CPUX86State *env, uint32_t index, uint32_t count,
     case 0x8000001F:
         *eax = *ebx = *ecx = *edx = 0;
         if (sev_enabled()) {
-            *eax = 0x2;
+            if (sev_es_enabled() || sev_snp_enabled())
+                *eax = env->features[FEAT_8000_001F_EAX];
+            *eax |= 0x2;
             *eax |= sev_es_enabled() ? 0x8 : 0;
             *eax |= sev_snp_enabled() ? 0x10 : 0;
             *ebx = sev_get_cbit_position();

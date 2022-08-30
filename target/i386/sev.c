@@ -741,6 +741,23 @@ sev_snp_guest_set_host_data(Object *obj, const char *value, Error **errp)
     memcpy(finish->host_data, blob, len);
 }
 
+static bool
+sev_snp_guest_get_secure_tsc(Object *obj, Error **errp)
+{
+    SevSnpGuestState *sev_snp_guest = SEV_SNP_GUEST(obj);
+
+    return sev_snp_guest->kvm_init_conf.flags & SEV_SNP_FLAG_SECURE_TSC;
+}
+
+static void
+sev_snp_guest_set_secure_tsc(Object *obj, bool value, Error **errp)
+{
+    SevSnpGuestState *sev_snp_guest = SEV_SNP_GUEST(obj);
+
+    if (value)
+        sev_snp_guest->kvm_init_conf.flags |= SEV_SNP_FLAG_SECURE_TSC;
+}
+
 static void
 sev_snp_guest_class_init(ObjectClass *oc, void *data)
 {
@@ -770,6 +787,9 @@ sev_snp_guest_class_init(ObjectClass *oc, void *data)
     object_class_property_add_str(oc, "host-data",
                                   sev_snp_guest_get_host_data,
                                   sev_snp_guest_set_host_data);
+    object_class_property_add_bool(oc, "secure-tsc",
+                                  sev_snp_guest_get_secure_tsc,
+                                  sev_snp_guest_set_secure_tsc);
 }
 
 static void
@@ -1167,6 +1187,7 @@ sev_snp_launch_start(SevSnpGuestState *sev_snp_guest)
     int fw_error, rc;
     SevCommonState *sev_common = SEV_COMMON(sev_snp_guest);
     struct kvm_sev_snp_launch_start *start = &sev_snp_guest->kvm_start_conf;
+    start->desired_tsc_freq = DEFAULT_GUEST_TSC_FREQ;
 
     trace_kvm_sev_snp_launch_start(start->policy, sev_snp_guest->guest_visible_workarounds);
 

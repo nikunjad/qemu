@@ -3449,7 +3449,9 @@ static int kvm_put_msrs(X86CPU *cpu, int level)
      * for normal writeback. Limit them to reset or full state updates.
      */
     if (level >= KVM_PUT_RESET_STATE) {
-        kvm_msr_entry_add(cpu, MSR_IA32_TSC, env->tsc);
+	if (!(env->features[FEAT_8000_001F_EAX] & CPUID_8000_001F_EAX_SECURE_TSC)) {
+            kvm_msr_entry_add(cpu, MSR_IA32_TSC, env->tsc);
+        }
         kvm_msr_entry_add(cpu, MSR_KVM_SYSTEM_TIME, env->system_time_msr);
         kvm_msr_entry_add(cpu, MSR_KVM_WALL_CLOCK, env->wall_clock_msr);
         if (env->features[FEAT_KVM] & (1 << KVM_FEATURE_ASYNC_PF_INT)) {
@@ -3930,7 +3932,7 @@ static int kvm_get_msrs(X86CPU *cpu)
     if (has_msr_virt_ssbd) {
         kvm_msr_entry_add(cpu, MSR_VIRT_SSBD, 0);
     }
-    if (!env->tsc_valid) {
+    if (!env->tsc_valid && !(env->features[FEAT_8000_001F_EAX] & CPUID_8000_001F_EAX_SECURE_TSC)) {
         kvm_msr_entry_add(cpu, MSR_IA32_TSC, 0);
         env->tsc_valid = !runstate_is_running();
     }

@@ -30,6 +30,11 @@
 #define SEV_SNP_POLICY_SMT      0x10000
 #define SEV_SNP_POLICY_DBG      0x80000
 
+#define SEV_SNP_FLAG_SECURE_TSC	BIT(0)
+
+/* Default Guest TSC freq in kHz */
+#define DEFAULT_GUEST_TSC_FREQ	2000000
+
 typedef struct SevKernelLoaderContext {
     char *setup_data;
     size_t setup_size;

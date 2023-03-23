@@ -49,6 +49,7 @@
 #include "sysemu/dirtylimit.h"
 
 #include "hw/boards.h"
+#include "hw/block/flash.h"
 #include "monitor/stats.h"
 
 /* This check must be after config-host.h is included */
@@ -2871,8 +2872,8 @@ int kvm_convert_memory(hwaddr start, hwaddr size, bool shared_to_private, bool p
     }
 
 
-    if (object_dynamic_cast(section.mr->owner,
-                            TYPE_MEMORY_BACKEND_MEMFD_PRIVATE)) {
+    if (object_dynamic_cast(section.mr->owner, TYPE_MEMORY_BACKEND_MEMFD_PRIVATE) ||
+        (object_dynamic_cast(section.mr->owner,TYPE_PFLASH_CFI01) && section.mr->ram_block->restricted_fd)) {
         ConfidentialGuestSupport *cgs = MACHINE(qdev_get_machine())->cgs;
         addr = memory_region_get_ram_ptr(section.mr) +
             section.offset_within_region;
